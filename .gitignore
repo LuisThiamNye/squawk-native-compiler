@@ -1,0 +1,5 @@
+.lsp
+.clj-kondo
+zig-out
+zig-cache
+*.sublime-workspace

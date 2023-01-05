@@ -1,0 +1,113 @@
+(do this that other)
+
+; SYNTAX TEST "EDN (Sublimed).sublime-syntax"
+
+
+;; CONSTANTS
+  nil true false
+  Nil
+
+
+;; STRINGS
+  "abcde" 
+  "" 
+ "([{)]} ;"
+; ^^^^^^^^^^ string.quoted.double.edn
+  "multi
+; ^       punctuation.definition.string.begin.edn
+; ^^^^^^  string.quoted.double.edn
+  line
+; ^^^^    string.quoted.double.edn
+string"
+; ^^^^^   string.quoted.double.edn
+;     ^   punctuation.definition.string.end.edn
+;; ESCAPES
+  "\" \\ \r \n \b \t \f"
+;; INCORRECT STRINGS
+ ;"\x \888 \u000 \u000g"
+
+
+;; CHARACTERS
+  \c \newline \u221E \u221e \o3 \o50 \o377
+  \\ \] \) \} \" \' \; \,
+;; NOT CHARACTERS
+  \aa \u11 \o378 \
+  a\b
+; ^^^ -constant.character.edn
+
+
+;; COMMENTS
+  ; single semicolon
+  "abc" ; after something
+  #_(abc) #_[123] #_xyz
+
+
+;; SYMBOLS
+  a abc абв
+  . * + ! - _ ? $ % & = < > /
+  a1 a: a# a' -a +a .a k::v
+  a/b a1/b2 абв/где abc.def/uvw.xyz clojure.core//
+; NOT SYMBOLS
+  a/ /b 1a -1a +1a .1a 'a
+; ^^^^^^^^^^^^^^^^^^^^^^^ -source.symbol.edn
+
+;; KEYWORDS
+  :a :abc :абв
+  :. :* :+ :! :- :_ :? :$ :% :& := :< :> :# :1 :' :a: :k::v
+  :a/b :1/2 :абв/где :abc.def/uvw.xyz
+;; NOT KEYWORDS
+  :kv/ :/kv :/ ::kv ::k/v :k/:v :k/v/v :::kv 
+; ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ -constant.other.keyword.edn
+
+;; INTEGERS
+  0 1 23 1234567890 -0 +0 0N
+;; NOT INTEGERS
+  01 1n ++1 --1 +N -N
+; ^^^^^^^^^^^^^^^^^^^ -constant.numeric.integer.edn
+
+;; FLOATS
+  0.0 0.000 999.999 1. 0e1 2e+3 4e-5 67E89 1.2e3 444.555E+666 1.e3
+  0M 123M 4.M 5e6M 7.8e9M -3.14 +2e19M
+  ##Inf ##-Inf ##NaN
+;; NOT FLOATS
+  00.0 1e2.3 1e 1.0e --1.0 ++1.0 +M -M 1m ###Inf ##inf ##+Inf
+; ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ -constant.numeric.float.edn
+
+
+;; RATIOS
+  1/2 0/2 999/999 +1/2 -1/2
+;; NOT RATIOS
+  1/0 00/2 0/01 ++0/2 --0/2
+; ^^^^^^^^^^^^^^^^^^^^^^^^^ -constant.numeric.ratio.edn
+
+
+;; TAGS
+  #inst "1985-01-25" 
+  #inst"2018-03-28T10:48:00.000"
+  #inst   "2018-03-28T10:48:00.000Z"
+  #inst "2018-03-28T10:48:00.000+01:30"
+  #inst "2018-12-31T23:59:60.999999999-23:59"
+  #uuid "c5634984-363d-4727-B8CE-b06ab1253c81"
+  #datascript/DB {:schema {}, :datoms {}}
+;; NOT TAGS
+  #inst "1985-"
+  #inst "1985-20"
+  #inst "1985-12-40"
+  #inst "1985-12-31T30"
+  #inst "1985-12-31T23:60"
+  #inst "1985-12-31T23:59:70"
+  #inst "1985-12-31T23:59:60.999+30:00"
+  #inst "1985-12-31T23:59:60.999+12:60"
+  #uuid "abc"
+  #uuid "g5634984-363d-4727-b8ce-b06ab1253c81"
+  #123 #a/ #_tag #{} ##Inf
+
+;; punctuation
+  , 
+  " "
+  ( )
+  [ ]
+  { }
+  #{ }
+  ; ...
+

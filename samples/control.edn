@@ -1,0 +1,51 @@
+(if cond1
+  (let [x 1]
+    (if (cond2 x)
+      x
+      b))
+  b)
+
+(or (when cond1
+      (let [x 1]
+        (when (cond2 x)
+          x)))
+  b)
+
+(do
+  (when cond1
+    (let [x 1]
+      (when (cond2 x)
+        x
+        RETURN)))
+  b)
+
+(if (and
+      cond1
+      (=: x 1)
+      (cond2 x))
+  x
+  b)
+
+
+(let [x 2
+      _ (prn 7 x)
+      y 3]
+  (return thing y))
+
+(let
+  [x 2]
+  (prn 7 x)
+  [y 3]
+  (return thing y))
+
+(do
+  (=: x 2)
+  (prn 7 x)
+  (=: y 3)
+  (return thing y))
+
+(<-
+  (let x 2)
+  (prn 7 x)
+  (let y 3)
+  (return thing y))

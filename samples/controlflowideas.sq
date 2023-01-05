@@ -1,0 +1,195 @@
+#_(defn read-next-form
+  [(p *Parser)] -> Message
+  (case (read-to-nonws p)
+    (:eof :eof)
+    (:char ch
+      (<-
+        ;; coll end
+        (if (< 0 (count (:items coll-stack)))
+          (let at-end? (parse-delimited-coll-end p ch)
+            (if at-end? :coll-end (&fallthrough))))
+        
+        (if (digit? ch)
+          (parse-number p ch))
+        (let macro (at macro-table ch))
+        (if (not= :none macro)
+          (parse-macro p macro))
+        ;; signed char
+        (if (and (or (= ch "-") (= ch "+"))
+              (< next-idx (count buf)))
+          (let ch2 (at buf next-idx)
+            (if (digit? ch2)
+              (parse-number p ch)
+              (&fallthrough))))
+        ;; symbol/keyword
+        (let token (read-token p))
+        (if (and (< 0 (count token)) (= ":" (at token 0)))
+          {:keyword token}
+          {:symbol token})))))
+
+#_(defn read-next-form
+  [(p *Parser)] -> Message
+  (case (read-to-nonws p)
+    (:eof :eof)
+    (:char ch
+      (dosome
+        ;; coll end
+        (when (< 0 (count (:items coll-stack)))
+          (let at-end? (parse-delimited-coll-end p ch)
+            (when at-end? :coll-end)))
+
+        (when (digit? ch)
+          (parse-number p ch))
+        (let macro (at macro-table ch))
+        (when (not= :none macro)
+          (parse-macro p macro))
+        ;; signed char
+        (when (and (or (= ch "-") (= ch "+"))
+                (< next-idx (count buf)))
+          (let ch2 (at buf next-idx)
+            (when (digit? ch2)
+              (parse-number p ch))))
+        ;; symbol/keyword
+        (let token (read-token p))
+        (if (and (< 0 (count token)) (= ":" (at token 0)))
+          {:keyword token}
+          {:symbol token})))))
+
+#_(defn read-next-form
+  [(p *Parser)] -> Message
+  (case (read-to-nonws p)
+    (:eof :eof)
+    (:char ch
+      (dosome ;; like 'or'
+        ;; coll end
+        (when (< 0 (count (:items coll-stack))) ;; implicit <-
+          (let at-end? (parse-delimited-coll-end p ch))
+          (when at-end?)
+          :coll-end)
+
+        (when (digit? ch)
+          (parse-number p ch))
+        
+        (let macro (at macro-table ch))
+        (when (not= :none macro)
+          (parse-macro p macro))
+        ;; signed char
+        (when (and (or (= ch "-") (= ch "+"))
+                (< next-idx (count buf)))
+          (let ch2 (at buf next-idx))
+          (when (digit? ch2))
+          (parse-number p ch))
+        ;; symbol/keyword
+        (let token (read-token p))
+        (if (and (< 0 (count token)) (= ":" (at token 0)))
+          {:keyword token}
+          {:symbol token})))))
+
+#_(defn read-next-form
+  [(p *Parser)] -> Message
+  (doflow
+    (case (read-to-nonws p)
+      (:eof (&reduced :eof))
+      (:char &val))
+    (let ch &prev)
+    (dosome ;; like 'or'
+      ;; coll end
+      (when (< 0 (count (:items coll-stack))) ;; implicit <-
+        (let at-end? (parse-delimited-coll-end p ch))
+        (when at-end?)
+        :coll-end)
+
+      (when (digit? ch)
+        (parse-number p ch))
+        
+      (let macro (at macro-table ch))
+      (when (not= :none macro)
+        (parse-macro p macro))
+      ;; signed char
+      (when (and (or (= ch "-") (= ch "+"))
+              (< next-idx (count buf)))
+        (let ch2 (at buf next-idx))
+        (when (digit? ch2))
+        (parse-number p ch))
+      ;; symbol/keyword
+      (let token (read-token p))
+      (if (and (< 0 (count token)) (= ":" (at token 0)))
+        {:keyword token}
+        {:symbol token}))))
+
+(defn read-next-form
+  [(p *Parser)] -> Message
+  (doflow ;; like 'do', but prev statement's result is accessible by &prev or :as sym; also supports short circuiting
+    (case (read-to-nonws p)
+      (:eof (&reduced :eof))
+      (:char &val))
+    :as ch
+    (dosome ;; like 'or', short circuits on non-void result
+      ;; coll end
+      (when (< 0 (count (:items coll-stack)))
+        (doflow
+          (parse-delimited-coll-end p ch)
+          :as at-end?
+          (when-not at-end? &reduced) ;; = (&reduced void)
+          :coll-end))
+
+      (when (digit? ch)
+        (parse-number p ch))
+        
+      (let macro (at macro-table ch)) ;; let does not support child
+      (when (not= :none macro)
+        (parse-macro p macro))
+      ;; signed char
+      (when (and (or (= ch "-") (= ch "+"))
+              (< next-idx (count buf)))
+        (doflow
+          (let ch2 (at buf next-idx))
+          (when-not (digit? ch2) &reduced)
+          (parse-number p ch)))
+      ;; symbol/keyword
+      (let token (read-token p))
+      (if (and (< 0 (count token)) (= ":" (at token 0)))
+        {:keyword token}
+        {:symbol token}))))
+#_
+(doand ;; short circuits on void result; opposite of dosome
+  (parse-delimited-coll-end p ch)
+  :as at-end?
+  (when at-end? &continue) ;; or (when at-end? true)
+  :coll-end)
+
+(defn read-next-form
+  [(p *Parser)] -> Message
+  (doflow ;; like 'do', but prev statement's result is accessible by &prev or :as sym; also supports short circuiting
+    ;; possibly could have    :let [exit-main &reduced]
+    (case (read-to-nonws p)
+      (:eof (&reduced :eof))
+      (:char &val))
+    :as ch
+    (dosome ;; like 'or', short circuits on non-void result
+      ;; coll end
+      (when (< 0 (count (:items coll-stack)))
+        (doflow
+          (parse-delimited-coll-end p ch)
+          :when &prev ;; at-end?
+          :coll-end))
+
+      (when (digit? ch)
+        (parse-number p ch))
+      (let macro (at macro-table ch))
+      (when (not= :none macro)
+        (parse-macro p macro))
+      ;; signed char
+      (when (and (or (= ch "-") (= ch "+"))
+              (< next-idx (count buf)))
+        (doflow
+          (let ch2 (at buf next-idx))
+          :when (digit? ch2) ;; break if false
+          (parse-number p ch)))
+      ;; symbol/keyword
+      (let token (read-token p))
+      (if (and (< 0 (count token)) (= ":" (at token 0)))
+        {:keyword token}
+        {:symbol token}))))
+
+;; idea is that indentation and structure is a more useful representation of control flow / branches

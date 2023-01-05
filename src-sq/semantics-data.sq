@@ -1,0 +1,91 @@
+
+(defstruct Jumppad-Clause
+  (:label Node)
+  (:expr Node))
+
+(defstruct Jumppad
+  (:init Node)
+  (:clauses [Jumppad-Clause]))
+
+(defstruct Case
+  (:test Node)
+  (:clauses [Case-Clause])
+  (:fallback Node))
+
+(defstruct Do
+  :exprs [Node])
+
+(defunion Doflow-Clause-Union
+  (:expr Node)
+  (:let Node))
+
+(defstruct Doflow-Clause
+  (:tag (.enum-type Doflow-Clause-Union))
+  :use Doflow-Clause-Union
+  )
+
+(defstruct Doflow
+  :clauses [Doflow-Clause])
+
+; (defstruct Dosome
+;   :clauses [Dosome-Clause])
+
+(defstruct If
+  (:test Node)
+  (:then Node)
+  (:else Node))
+
+(defstruct When
+  (:test Node)
+  (:body [Node]))
+
+(defstruct And
+  (:exprs [Node]))
+
+(defstruct Or
+  (:exprs [Node]))
+
+(defstruct Binding
+  (:name String))
+
+(defstruct Loop-Source
+  (:binding Binding)
+  (:source Node))
+
+(defstruct Doeach
+  (:implicit? bool)
+  (:sources Loop-Source)
+  (:main Node)
+  (:continue Node))
+
+(defstruct Scan
+  (:implicit? bool)
+  (:sources Loop-Source)
+  (:main Node)
+  (:final Node))
+
+(defstruct Let
+  (:binding Binding)
+  (:type Node)
+  (:init Node)
+  (:defer? bool)
+  (:defer Node))
+
+(defstruct Cast
+  (:trunc? bool)
+  (:type Node)
+  (:expr Node))
+
+(defstruct Fn-Param
+  (:binding Binding)
+  (:type Node))
+
+(defstruct Fn
+  (:params [Fn-Param])
+  (:vararg? bool)
+  (:vararg Node)
+  (:ret-type Node)
+  (:expr Node))
+
+(defstruct Struct
+  (:members [Node]))

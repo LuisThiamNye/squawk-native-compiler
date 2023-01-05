@@ -1,0 +1,71 @@
+
+#_"
+1. semantic analysis on code AST
+- start with entry Var
+- analyse as much as possible up to unresolved symbol
+- find Var, establish dependency and start analysing that
+- if done or circular dependency found, come back
+- continue analysis using constant known information about the symbol
+- if insufficient information, fail
+- when done, with this Var, analyse unfinished vars
+
+"
+
+(defn lexsf-case
+  [(ctx *Ctx) (form ListForm)] -> Node
+  (doflow
+    (let children (:children form))
+    (let test (lex-code-expr (at children 1)))
+    (let clauses ())
+    (let fallback )
+    {:case {:test test :clauses clauses :fallback fallback}}))
+
+(defn lexsf-jumppad
+  [(ctx *Ctx) (form ListForm)] -> Node
+  (dosome
+    (let children (:children form))
+    (when-not (< 1 (count children))
+      {:error {:message "Special form can't have empty args"}})
+    ; (let init)
+    {:jumppad {:init init :clauses clauses}}))
+
+(defn lex-list
+  [(ctx *Ctx) (form ListForm)] -> Node
+  (dosome
+    (when (= 0 (count (:children form)))
+      {:error {:message "Can't have list with no children"}})
+    (let child1 (at children 0))
+    (case (:tag child1)
+      (:symbol
+        (dosome
+          (let sym (:symbol child1))
+          (when (= #ch "." (at sym 0))
+            (lex-poly-invoke form))
+          (case (.resolve-sym ctx sym)
+            (:none {:blocked {:invoke {:list form}}})
+            (:some
+              #_"lex binding invoke"))))
+      (&else
+        {:error {:message "Invalid first list element"}}))))
+
+(defn lex-code
+  [(ctx *Ctx) (form Form)] -> Node
+  (doflow
+    ))
+
+(defstruct Ctx
+  (:stack [LexStackFrame ..]))
+
+(defn step-lexer
+  [(ctx *Ctx)] -> Message
+  ;;initially 
+  (case (lex-code ctx (:current-code ctx))
+    (:error (panic! "ERROR"))
+    (:blocked &val)
+    )
+  )
+
+(defn lex-var
+  [(ctx *Ctx) (var Var)] -> Node
+  (doflow
+    (let r (lex-code ctx (:init-code var)))))

@@ -1,0 +1,270 @@
+
+(defstruct String
+  (count int)
+  (data *u8))
+
+(defstruct TokenNode
+  (text String))
+
+(defstruct Parser
+  (next-idx usize)
+  (buf [u8] #_"array view")
+  (coll-stack [CollStackFrame ..] #_"dynamic array")
+  (msg Message))
+
+(defenum CollStackFrame
+  list vector map set)
+
+(defunion MessageUnion
+  (none )
+  (eof)
+  (keyword String)
+  (symbol String)
+  (number String)
+  (string String)
+  (char String)
+  (comment String)
+  (special-comment String)
+  (quote )
+  (meta )
+  (coll-start )
+  (coll-end )
+  (discard ))
+
+(defstruct Message
+  :enum true ;; TODO union
+  (tag (.enum-type MessageUnion))
+  :use MessageUnion)
+
+(defenum Macro
+  none 0 string comment quote meta list vector map unmatched-delim char dispatch)
+
+(defn init-parser
+  [(buf _)]
+  (Parser.
+    .next-idx 0
+    .buf buf
+    .msg :none
+    .coll-stack []))
+
+(def macro-char-map
+  {#ch "\"" :string
+   #ch ";" :comment
+   #ch "'" :quote
+   #ch "(" :list
+   #ch ")" :unmatched-delim
+   #ch "[" :vector
+   #ch "]" :unmatched-delim
+   #ch "{" :map
+   #ch "}" :unmatched-delim
+   #ch "\\" :char
+   #ch "#" :dispatch})
+
+(def macro-table
+  (doflow
+    (let a [Macro 256] ---)
+    (doeach macro-char-map
+      (setm a (trunc (key &el)) (val &el)))
+    a))
+
+(defn eof?
+  :inline
+  [(p Parser)] -> bool
+  (using p
+    (<= (count buf) next-idx)))
+
+(defunion MaybeChar
+  :tag (if (= 0 &self) :eof :char) ;; tag is derived from data, so does not use extra space
+  (eof)
+  (char u8))
+
+(defn read-to-nonws
+  [(p *Parser)] -> MaybeChar
+  (doflow
+    (using p)
+    (let endx (count buf))
+    (let i next-idx)
+    (jumppad :loop
+      (doflow
+        (when (<= endx i) (&reduced 0))
+        (let ch (at buf i))
+        (when (whitespace? ch)
+          (swap i inc)
+          (&goto :loop))
+        ch))))
+
+(defn digit?
+  [(ch u8)] -> bool
+  (<= #ch "0" ch #ch "9"))
+
+(def whitespace-chars
+  [#ch " " #ch "\t" #ch "\n" #ch "\r"
+   11 #_"vertical tab" 12 #_"formfeed"])
+
+(defn whitespace?
+  [(ch u8)] -> bool
+  (scan whitespace-chars
+    (if (= ch &el) true (&scan))
+    false))
+
+(defn terminating-macro?
+  [(ch u8)] -> bool
+  (and (not= ch #ch "#") (not= ch #ch "'") (not= ch #ch "%")
+    (not= :none (at macro-table ch))))
+
+(defn read-token
+  [(p *Parser) (ch0 u8)] -> String
+  (doflow (using p)
+    (let sb (init-string-builder)
+      :defer (.free-buffers sb))
+    (.append sb ch0)
+    (let endx (count buf))
+    (let i next-idx)
+    (jumppad :loop
+      (doflow
+        (when (<= endx i) (&reduced))
+        (let ch (at buf i))
+        (when (or (whitespace? ch) (terminating-macro? ch))
+          (&reduced {:comment (.string sb)}))
+        (swap i inc)
+        (.append sb ch)
+        (&goto :loop)))
+    (set next-idx i)
+    (.string sb)))
+
+(defn parse-string
+  [(p *Parser)] -> Message
+  (doflow (using p)
+    (let sb (init-string-builder)
+      :defer (.free-buffers sb))
+    (let endx (count buf))
+    (let i next-idx)
+    (jumppad :loop
+      (doflow
+        (when (<= endx i) (&reduced :eof))
+        (let ch (at buf i))
+        (swap i inc)
+        (when (= ch #ch "\"")
+          (&reduced {:comment (.string sb)}))
+        (.append sb ch)
+        (when (= ch #ch "\\")
+          (doflow
+            (when (<= endx i) (&reduced :eof))
+            (let ch2 (at buf i))
+            (swap i inc)
+            (.append sb ch2)))
+        (&goto :loop)))
+    :as r
+    (set next-idx i)
+    r))
+
+(defn parse-comment
+  [(p *Parser)] -> Message
+  (doflow (using p)
+    (let sb (init-string-builder)
+      :defer (.free-buffers sb))
+    (let endx (count buf))
+    (let i next-idx)
+    (jumppad :loop
+      (doflow
+        (when (<= endx i) (&reduced))
+        (let ch (at buf i))
+        (when (= ch #ch "\n") (&reduced))
+        (.append sb ch)
+        (swap i inc)
+        (&goto :loop)))
+    {:comment (.string sb)})
+
+(defn parse-coll
+  [(p *Parser) (variant CollType)] -> Message
+  (do (.append (:coll-stack p) variant)
+    {:coll-start {:variant variant}}))
+
+(defn parse-unmatched-delim
+  [(p *Parser)] -> Message
+  (panic! "unmatched delim"))
+
+(defn parse-dispatch
+  [(p *Parser)] -> Message
+  (doflow
+    (when (eof? p) (&reduced :eof))
+    (let idx next-idx)
+    (set next-idx (inc idx))
+    (case (at buf idx)
+      ("{" (parse-coll p :set))
+      ("!" (panic! "not impl"))
+      ("_" :discard)
+      (panic! "no discard"))))
+
+(defn parse-macro
+  [(p *Parser) (macro Macro)] -> Message
+  (case macro
+    (:string (parse-string p))
+    (:comment (parse-comment p))
+    (:quote (parse-quote p))
+    (:meta (parse-meta p))
+    (:list (parse-list p))
+    (:vector (parse-vector p))
+    (:map (parse-map p))
+    (:unmatched-delim (parse-unmatched-delim p))
+    ; (:char (parse-char p))
+    (:dispatch (parse-dispatch p))
+    (:none (panic! "no macro"))))
+
+(defn parse-number
+  [(p *Parser) (ch u8)] -> Message
+  (do (swapm p :next-idx dec)
+    {:number {:token (read-token p)}}))
+
+(defn parse-delimited-coll-end
+  [(p *Parser) (ch u8)] -> bool
+  (doflow
+    (using p)
+    (let frame (at coll-stack (dec &n)))
+    (let end-ch (case frame
+                  (:list #ch ")")
+                  (:vector #ch "]")
+                  (:map #ch "}")
+                  (:set #ch "}")))
+    (when (= ch end-ch)
+      (.pop coll-stack)
+      true)))
+
+(defn read-next-form
+  [(p *Parser)] -> Message
+  (doflow
+    (case (read-to-nonws p)
+      (:eof (&reduced :eof))
+      (:char &val))
+    :as ch
+    (dosome
+      ;; coll end
+      (when (< 0 (count (:items coll-stack)))
+        (doflow
+          (parse-delimited-coll-end p ch)
+          :when &prev ;; at-end?
+          :coll-end))
+
+      (when (digit? ch)
+        (parse-number p ch))
+      (let macro (at macro-table ch))
+      (when (not= :none macro)
+        (parse-macro p macro))
+      ;; signed char
+      (when (and (or (= ch "-") (= ch "+"))
+              (< next-idx (count buf)))
+        (doflow
+          (let ch2 (at buf next-idx))
+          :when (digit? ch2)
+          (parse-number p ch)))
+      ;; symbol/keyword
+      (let token (read-token p))
+      (if (and (< 0 (count token)) (= ":" (at token 0)))
+        {:keyword token}
+        {:symbol token}))))
+
+(defn step
+  [(p *Parser)] -> Message
+  (doflow
+    (using p)
+    (read-next-form p)))

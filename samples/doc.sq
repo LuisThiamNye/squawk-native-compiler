@@ -1,0 +1,50 @@
+(def case)
+
+"Supports
+- integers
+  - table, linear search or binary search
+- strings, array views, dynamic arrays, static arrays
+  - ??
+- enums (integer)
+- bools (if branch)
+
+Cases must be statically determined
+"
+
+;; optionally ensure exhaustive handling with :all
+(case ^:all x
+  (1 (&through)) ;; fallthrough
+  (2 ...)
+  (&else ...))
+
+;; tagged unions: result bound to variables
+(case (get-thing)
+  (:alpha (prn &val)) ;; cases gets the specialisation
+  (:beta beta (prn beta))
+  (&else result ;; default case gets the original result
+    (prn result "is not an alpha or beta")))
+
+;; default case does not have to be last
+(case (get-thing)
+  (:alpha ...)
+  (&else (&through))
+  (:beta ...))
+
+;; booleans
+(case (get-thing)
+  (true (&through))
+  (false)) ;; no else
+
+;; jumping
+(case (get-thing)
+  (:alpha (&goto :beta))
+  :label :somewhere
+  (:beta ...)
+  (:gamma (&goto :somewhere)))
+
+;; combined cases
+(case (get-thing)
+  (^:or [1 3 7]
+    ...)
+  (^:range [8 11] ;; inclusive
+    ...))

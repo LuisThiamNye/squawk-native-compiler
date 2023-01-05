@@ -1,0 +1,344 @@
+
+"
+Emphasis on:
+- Factorability
+- Performance
+- Simplicity
+- User control and power / flexibility
+- Conciseness
+
+top level definitions
+- global data
+- type defs (structs, unions, enums)
+- functions
+
+Factorability
+- aim to make it easier to manipulate than traditional lispy languages
+  eg when trying to insert prn between expressions
+- aim to maximise flexibility with a few powerful macros for control flow,
+  rather than having many macros for specific situations
+"
+
+;; rather than overusing macros, would be good to have a convenient way to 
+;; quickly set up templates to create new empty function declarations
+;; (e.g. with parameters filled in). Other refactoring features reduce the need
+;; for abstraction with macros, as it is easier to update a large number of functions
+
+;; basic types
+;;;;;;;;;;;
+
+bool
+uN
+sN
+f32 f64
+void
+int = s64
+float = float32
+
+;; typedefs
+
+char = u32
+;; user controls implicit casting/whether arithmetic is allowed
+
+;; string
+(struct
+  :count int
+  :data *u8)
+
+;; Any type
+(struct
+  :type *TypeInfo
+  :value *void)
+
+;; casting
+"Widening without loss of information is implicit."
+
+(as TYPE expr)
+"Performs runtime bounds checking if appropriate, as an assertion."
+
+(trunc TYPE expr)
+"Casts without bounds check, for when losing information is intentional"
+
+"Others:
+arrays -> array view
+_ -> Any
+one-char string -> character
+"
+
+;; structs
+;;;;;;;;;;;;;;;;
+
+;; anonymous struct
+
+(struct
+  :x int
+  :y int)
+
+(struct ;; equivalent to union
+  :a s32
+  :b ^:as f64 ;; as enables implict casting to this member
+  {:place :a}
+  :c int
+  {:place :a
+   :align 16})
+
+;; accessing members
+
+(:x point)
+;; works through pointers
+(fn [obj^*MyStruct]
+  (:x obj))
+
+;; allow overriding member access to achieve aliases to inner structs
+(accessor my-struct ;; (:x my-struct)
+  (-> my-struct :entity :pos :x))
+
+(setter my-struct
+  (setm (-> my-struct :entity :pos) :x &value))
+
+;; enums
+;;;;;;;;;;;
+
+(enum
+  :alpha
+  :beta 3
+  :gamma)
+
+(enum u32
+  :a :b)
+
+(enum-flags
+  :alpha ;; 0b001
+  :beta ;; 0b010
+  :gamma)
+
+;; unions
+;;;;;;;;;;;
+
+(union
+  :thing1
+  :thing2)
+
+;; keywords
+;;;;;;;;;;;;;;;;;;;;;;;
+
+:keyword ;; implicit keyword gets inferred contextually to an exact keyword
+::ns/keyword ;; exact keyword/attribute
+
+;; functions
+;;;;;;;;;;;;;;
+
+;; implicit context pointer passed to each function that needs it
+(struct
+  :allocator
+  ; :temp-allocator
+  :user-data)
+
+;; code
+;;;;;;;;;;;;;;
+
+;; imagine the UI showing a 'mut' label if the local gets assigned
+;; This reduces friction of writing the local, and defers the decision
+;; of mutability. Perhaps metadata could be explicity applied if you want to
+;; enforce something.
+(let x 1
+  (do (set x (+ x 2))
+    (swap x inc)
+    x))
+
+"Default inferred number types:
+integer -> int
+decimal -> float
+"
+
+(let x (as u8 49)
+  ...)
+
+(let x ^u8 49 ;; ??
+  ...)
+
+;; uninitialised variables. easy to spot
+(let x ^u8 ---
+  ...)
+
+;; boolean and bitwise ops
+(not )
+(or )
+(and )
+
+(b-or )
+(b-and )
+(b-xor )
+(b-not )
+(b<< x n)
+(b>> x n)
+
+;; number literals
+"10
+0b10
+0x10
+0b1010_1010_0011
+"
+;; character literal
+#ch"x"
+
+;; inline comment strings
+; #;"a comment"
+
+;; metadata applied to previous form
+;; idea: comma for metadata? or as a more general 'compound node'
+(fn [x,int y,float,:static z,:static])
+
+;; deref
+"@x = (deref x)"
+
+;; arrays
+
+;; static arrays
+(ar u32 4)
+(ar u32 [x y z])
+(ar [x y z]) ;; infer type
+#ar[x y z]
+;; ?: multidimensional
+
+;; java array
+(Array. s32 4)
+
+;; dynamic arrays
+...
+
+;; generic coll ops
+(at my-arr 3) ;; access element
+(setm my-arry 3 49) ;; set element
+(adjr my-arr x) ;; adjoin (add) to the right
+(adjl my-arr x) ;; left
+(.reset my-arr)
+(index-of my-arr x)
+(.copy src dest)
+
+(count my-arr)
+
+;; array view
+(struct
+  :count s64
+  :data *u8)
+
+;; branching
+
+(if cond then fail)
+
+(case ^:all x
+  1 (do
+      (fallthrough))
+  2 ...
+  ...)
+;; optionally ensure exhaustive handling with :all
+
+
+;; loops
+
+;; fallthrough and goto etc must be in tail positions
+(jumppad
+  (goto :loop) ;; optional init expr for jumping ahead
+  :recur
+  (do ;; eg i+=1
+    (fallthrough))
+  :loop
+  (do ...
+    (goto :recur)))
+
+;; go through both lists in parallel.
+;; By pointer allows mutation of elements
+(doeach [item items
+         ^:rev ^:ptr ;; reverse order, by pointer
+         x xs
+         i :idx]
+  ...)
+;; maybe contextual variables
+(doeach items (prn &el &idx))
+
+(doeach [it items]
+  (doeach [y ys]
+    (&break it))) ;; break out of outer loop (if in tail)
+
+(scan [it items]
+  (if cond
+    ret
+    (&scan)) ;; explicit continue
+  (else-do-something)) ;; if at end of list
+
+(doeach [it items]
+  (swap! &idx + 3)) ;; skip forward/backward, if supported
+
+(scan [it items]
+  (&scan (+ &idx 3))) ;; skip forward/backward more functionally
+
+;; explicit
+(scan [it1 items1
+       it2 items2
+       ;; perhaps better these done in a user-provided 'let' eg (let myel &el)
+       &el :el ;; or :el1
+       &el2 :el2
+       &scan :scan
+       &idx :idx])
+
+(doeach [it items]
+  (&remove it)) ;; unordered remove
+
+;; TODO user provided loop impls
+
+(doeach [i (range 0 2)] ;; range is inclusive
+  :continue (do-something)
+  (main-body))
+
+
+;; Functions
+;; are not closures by default
+
+(fn [x^int y^float z^MyStruct] ^int
+  {:or {y 4} ;; default arguments applied inline at callsite
+   }
+  )
+
+(myfn 1 2 {})
+(myfn 1 .z {} .y 2)
+;; expressions put directly in function arguments are assumed to have
+;; an order that does not matter
+;; Use a construct like 'do' to ensure a certain order of evaluation.
+;; This allows freedom to change the order of function parameters
+
+;; recursion
+(fn []
+  (+ (&fn) 1))
+(let f (fn [] (f))
+  ...)
+
+;; variadic
+(fn [arg & args])
+(myvf x y z)
+(myvs .args y z .arg x)
+;; splice
+(myvf x & [y z])
+(myvf .args & [y z] .arg x)
+
+;; inlining
+(^:inline myfn 1 2 {})
+(inline myfn 1 2 {})
+(fn :inline [])
+
+;; compile-time arguments functions
+(fn [arg^:static arg2]
+  (let x ^:static (do-stuff-at-comptime arg)
+    ...))
+
+;; local macros
+(let m (macro [x y] ...)
+  (m ...))
+
+
+(using
+  my-struct
+  (obj2 :only [obj2-member1]
+    (obj2-member1 :only [...]))
+  (do
+    my-struct-member))
