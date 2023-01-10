@@ -1,5 +1,5 @@
 
-#_"
+"
 1. semantic analysis on code AST
 - start with entry Var
 - analyse as much as possible up to unresolved symbol
@@ -8,16 +8,73 @@
 - continue analysis using constant known information about the symbol
 - if insufficient information, fail
 - when done, with this Var, analyse unfinished vars
-
+- If errors happen, it should be possible to optionally continue
+  analysing remaining code with limited information eg for IDE
 "
+"
+Case:
+1. parse structure (test, options, clauses)
+2. lex in order:
+- test
+- opts+cases+bindings (independently) (figure out valid jump targets)
+- case bodies(independently)
+"
+(defstruct Frame-Case
+  (:children [Form])
+  (:stage (enum-ordered
+            lex-test opts cases branches))
+  (:current-idx u8)
+  (:result Case :use))
 
 (defn lexsf-case
-  [(ctx *Ctx) (form ListForm)] -> Node
-  (doflow
+  [(ctx *Ctx) (form ListForm)] -> Message
+  (dosome
     (let children (:children form))
-    (let test (lex-code-expr (at children 1)))
-    (let clauses ())
-    (let fallback )
+    (when (<= (count children) 1)
+      {:error {:message "Case can't have empty args"}})
+    (.push-frame ctx {^Frame-Case
+                      :children children
+                      :stage :lex-test
+                      :current-idx 1})
+    (let test-form (at children 1))
+    {:lex-request {:form test-form}}))
+
+(defn lexsf-case'
+  [(ctx *Ctx) (state *Frame-Case)] -> Message
+  (dosome (using state)
+    (case stage
+      [:lex-test
+       (dosome
+         (let test-lex (:latest-lex ctx))
+         (setm state :test test-lex)
+         (swapm state :stage inc)
+         (swapm state :current-idx inc)
+         (&through))]
+      [:opts
+       (dosome
+         (when (> 3 (count children))
+           {:error {:message "Case has no clauses"}})
+         (let next-form (at children current-idx))
+         (case next-form
+           #_[:keyword kw-token
+              (dosome
+                (when (.equal "as" kw-token))
+                )]
+           [:vector vec-form ;; clause
+            (dosome
+              (let children (:children vec-form))
+              (when (-> children :count (< 2))
+                {:error {:message "Clause has insufficient forms"}})
+              (when (-> children :count (> 3))
+                {:error {:message "Clause has too many forms"}})
+              (let binding? (-> children :count (= 3)))
+              (let expr-form (-> children (at (-> children :count dec))))
+              (let case-form (-> children (at 0)))
+              ())]
+           [&else
+            (dosome
+              (swapm state :current-idx inc)
+              {:error {:message "Case: Invalid form"}})]))])
     {:case {:test test :clauses clauses :fallback fallback}}))
 
 (defn lexsf-jumppad
@@ -29,6 +86,48 @@
     ; (let init)
     {:jumppad {:init init :clauses clauses}}))
 
+(defstruct Frame-When
+  (:forms [Form])
+  (:stage (enum-ordered
+            lex-test opts cases branches))
+  (:current-idx u8)
+  (:result When :use))
+
+(defn lexsf-when
+  [(ctx *Ctx) (form ListForm)] -> Message
+  (dosome
+    (let children (:children form))
+    (when (→ children :count (< 3))
+      {:error {:message "Insufficient forms"}})
+    (when (→ children :count (> 3))
+      {:error {:message "Excess forms"}})
+    (let test-form (at children 1))
+    (.push-frame ctx {^Frame-When
+                      :forms children
+                      :current-idx 1
+                      :result ---})
+    {:lex-request {:form test-form}}
+    
+    (when ()
+      {:error {}})))
+
+(defn lexsf-when'
+  [(ctx *Ctx) (state Frame-When)] -> Message
+  (case (:current-idx state)
+    [1 (dosome
+         (using state)
+         (setm result :test (:latest-lex ctx))
+         (let then-form (at forms 2))
+         (swapm state :current-idx inc)
+         {:lex-request {:form then-form}})]
+    [2
+     (dosome
+       (using state)
+       (setm result :body [(:latest-lex ctx)])
+       (setm result :spec (spec/unite [(:spec (:latest-lex ctx))
+                                       spec/void-type]))
+       {:lexed {:node result}})]))
+
 (defn lex-list
   [(ctx *Ctx) (form ListForm)] -> Node
   (dosome
@@ -36,17 +135,17 @@
       {:error {:message "Can't have list with no children"}})
     (let child1 (at children 0))
     (case (:tag child1)
-      (:symbol
-        (dosome
-          (let sym (:symbol child1))
-          (when (= #ch "." (at sym 0))
-            (lex-poly-invoke form))
-          (case (.resolve-sym ctx sym)
-            (:none {:blocked {:invoke {:list form}}})
-            (:some
-              #_"lex binding invoke"))))
-      (&else
-        {:error {:message "Invalid first list element"}}))))
+      [:symbol
+       (dosome
+         (let sym (:symbol child1))
+         (when (= #ch "." (at sym 0))
+           (lex-poly-invoke form))
+         (case (.resolve-sym ctx sym)
+           [:none {:blocked {:invoke {:list form}}}]
+           [:some
+            #_"lex binding invoke"]))]
+      [&else
+        {:error {:message "Invalid first list element"}}])))
 
 (defn lex-code
   [(ctx *Ctx) (form Form)] -> Node
@@ -54,14 +153,15 @@
     ))
 
 (defstruct Ctx
-  (:stack [LexStackFrame ..]))
+  (:stack [LexStackFrame ..])
+  (:latest-lex Node))
 
 (defn step-lexer
   [(ctx *Ctx)] -> Message
   ;;initially 
   (case (lex-code ctx (:current-code ctx))
-    (:error (panic! "ERROR"))
-    (:blocked &val)
+    [:error (panic! "ERROR")]
+    [:blocked &val]
     )
   )
 
@@ -69,3 +169,30 @@
   [(ctx *Ctx) (var Var)] -> Node
   (doflow
     (let r (lex-code ctx (:init-code var)))))
+
+
+
+
+(let x 4)
+(if (= 5 (+ 1 2))
+  (prn (+ (inc x) 1))
+  (prn 9))
+
+4
+let x
+5
+1
+2
++
+if=
+  x
+  inc
+  ^free x
+  1
+  prn
+  <return>
+else
+  free x
+  9
+  prn
+  <return>

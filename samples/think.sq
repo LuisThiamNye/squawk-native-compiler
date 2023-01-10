@@ -67,6 +67,7 @@ one-char string -> character
 
 ;; structs
 ;;;;;;;;;;;;;;;;
+"Interesting things to look at: union types (instead of Maybe/Optional), clojure.spec2, Scala 3/Dotty"
 
 ;; anonymous struct
 
@@ -95,6 +96,67 @@ one-char string -> character
 
 (setter my-struct
   (setm (-> my-struct :entity :pos) :x &value))
+
+;; polymorphism: supertype to subtype
+
+Entity (struct
+         (:x int))
+Door (struct
+       (:entity ^:using Entity))
+;; If referred class Entity is not a pointer, Entity can be cast to Door
+;; as long as you have a pointer to the entity (the offset to door is known)
+(as *Door entity-ptr)
+
+;; providing code to find the sub from super
+Entity (struct
+         (:type EntityType)
+         ;; note: instead of using a pointer, could use a smaller index that is looked up in an array
+         (:specialisation rawptr))
+Door (struct
+       (:entity ^:using *Entity
+         :has-self (= :door (:type &data))
+         :get-self (:specialisation &data)))
+(when (isa? entity Door)
+  (as Door entity))
+
+;; like spec
+::x (spec/type int)  ::y (spec/type int)
+::position (spec/set [::x ::y])
+::specialisation (spec/union [::door])
+::entity (spec/set [::position ::specialisation])
+::door (spec/merge [(spec/except ::entity [::specialisation])
+                    (spec/set [::angle])])
+
+::x (spec/type int)  ::y (spec/type int)
+::position (spec/set [::x ::y])
+::entity (spec/set [::position])
+::door (spec/merge [::entity (spec/set [::angle])]) ;; implies ::door is ::entity
+
+(isa? entity ::door)
+(spec/select ::door [::angle])
+Entity (struct :is [::entity]
+         :keys [::position])
+Door (struct :is [::door]
+       :use Entity
+       :keys [::angle])
+
+;; heirarchy of contexts
+::class-ctx (spec/set [::name])
+::method-ctx (spec/set [::class-ctx ::name])
+ClassCtx (struct :is [::class-ctx]
+           :keys [::name]
+           (:method-ctxs [MethodCtx]))
+MethodCtx (struct :is [::method-ctx]
+            :keys [::name])
+myfn (fn [(args (struct
+                  (:method-ctx ^:use *MethodCtx)
+                  (:class-ctx *ClassCtx)))])
+[*MethodCtx *ClassCtx] ;; implementation of function parameters (two pointers)
+(myfn {:class-ctx cctx :method-ctx mctx})
+;; perhaps parameters always define a struct
+myfn (fn [(method-ctx ^:use *MethodCtx)
+          (class-ctx *ClassCtx)]
+       name #_"from using method-ctx")
 
 ;; enums
 ;;;;;;;;;;;
@@ -234,6 +296,19 @@ decimal -> float
   ...)
 ;; optionally ensure exhaustive handling with :all
 
+;; alternative syntax
+(case x
+  (= :alpha a
+    ...)
+  (= :beta
+    ...))
+(cond (...)
+  (= 0 dothing)
+  (in [1 3 4] :inline x
+    dothing)
+  (.. 5 100 :inline x 
+    dothing)
+  )
 
 ;; loops
 
@@ -272,6 +347,10 @@ decimal -> float
 
 (scan [it items]
   (&scan (+ &idx 3))) ;; skip forward/backward more functionally
+
+(scan [a as]
+  (scan [b bs]
+    (&scan-for a)))
 
 ;; explicit
 (scan [it1 items1
@@ -342,3 +421,112 @@ decimal -> float
     (obj2-member1 :only [...]))
   (do
     my-struct-member))
+
+
+;; shorthand
+
+(= 4 (:type (:children (:current item))))
+(= 4 item.current.children.type) ;; seems reasonable
+(= 4 item:current:children:type) ;; seems reasonable
+(= 4 item/current/children/type) ;; ?? problem that locals would pollute scope of global namespace
+(= (+ 1 2 3) item/current-with-some-very/
+             long-name/children/type     ) ;; single multiline symbol node; i don't like it
+(= 4 (-> item :current :children :type))
+(= 4 (: item current children type))
+
+;; note: prefix of . like .print has meaning that symbol is namespaced relative to the target object
+
+"in more object-oriented cases where functions and accessors
+ are context-dependent on a single object, a smalltalk style of
+ expressing code makes more sense"
+(< 0 (count (:items (:coll-stack parser))))
+(< 0 parser,:coll-stack,:items,count)
+(< 0 (-> parser :coll-stack :items count))
+;; should there be a distinction between kwlookup and unary function call?
+;; perhaps distinction could be mainly stylistic, with ':' meaning 'get-'
+;; with semantic that lookup is cheap, inlined and has concept of an attribute
+(< 0 (-> parser .coll-stack .items count))
+(< 0 (count parser:coll-stack:items))
+(< 0 (count (: parser coll-stack items)))
+(< 0 (count (. parser coll-stack items)))
+0 < parser.coll-stack.items.count()
+(< 0 parser(:coll-stack)(:items)(count))
+
+;; non lisp ideas
+
+(defn read-next-form
+  [(p *Parser)] -> Message
+  (doflow
+    (case (read-to-nonws p)
+      [:eof (&reduced :eof)]
+      [:char &val])
+    :as ch
+    (dosome
+      ;; coll end
+      (when (< 0 (count (:items coll-stack)))
+        (doflow
+          (parse-delimited-coll-end p ch)
+          :when &prev ;; at-end?
+          :coll-end))
+
+      (when (digit? ch)
+        (parse-number p ch))
+      (let macro (at macro-table ch))
+      (when (not= :none macro)
+        (parse-macro p macro))
+      ;; signed char
+      (when (and (or (= ch "-") (= ch "+"))
+              (< next-idx (count buf)))
+        (doflow
+          (let ch2 (at buf next-idx))
+          :when (digit? ch2)
+          (parse-number p ch)))
+      ;; symbol/keyword
+      (let token (read-token p))
+      (if (and (< 0 (count token)) (= ":" (at token 0)))
+        {:keyword token}
+        {:symbol token}))))
+
+"one problem with this is that opening brackets
+get ahead of opening brackets of the contained children"
+defn(read-next-form
+  [(p *Parser)] -> Message
+  doflow(
+    case(read-to-nonws(p)
+      [:eof &reduced(:eof)]
+      [:char &val])
+    :as ch
+    dosome(
+      ;; coll end
+      when(<(0 count(:items(coll-stack)))
+        doflow(
+          (parse-delimited-coll-end p ch)
+          :when &prev ;; at-end?
+          :coll-end))
+
+      when(digit?(ch)
+        parse-number(p ch))
+      let(macro (at macro-table ch))
+      when(not=(:none macro)
+        parse-macro(p macro))
+      ;; signed char
+      when(and(or(=(ch "-") =(ch "+"))
+             <(next-idx (count buf)))
+        doflow(
+          let(ch2 at(buf next-idx))
+          :when digit?(ch2)
+          parse-number(p ch)))
+      ;; symbol/keyword
+      let(token (read-token p))
+      if(and(<(0 count(token)) =(":" at(token 0)))
+        {:keyword token}
+        {:symbol token}))))
+
+
+;; dependent args
+Ctx (struct
+      :current-idx int
+      :nodes [Node])
+(defn [(ctx Ctx)
+       (current-node Node
+         :or (at (:nodes ctx) (:current-idx ctx)))])

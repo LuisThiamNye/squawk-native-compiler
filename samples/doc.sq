@@ -13,38 +13,91 @@ Cases must be statically determined
 
 ;; optionally ensure exhaustive handling with :all
 (case ^:all x
-  (1 (&through)) ;; fallthrough
-  (2 ...)
-  (&else ...))
+  [(&through)] ;; fallthrough
+  [2 ...]
+  [&else ...])
 
 ;; tagged unions: result bound to variables
 (case (get-thing)
-  (:alpha (prn &val)) ;; cases gets the specialisation
-  (:beta beta (prn beta))
-  (&else result ;; default case gets the original result
-    (prn result "is not an alpha or beta")))
+  :as result ;; for use in specialised cases
+  [:alpha (prn &val)] ;; cases gets the specialisation
+  [:beta beta (prn beta)]
+  [&else result ;; default case gets the original result
+   (prn result "is not an alpha or beta")])
 
 ;; default case does not have to be last
 (case (get-thing)
-  (:alpha ...)
-  (&else (&through))
-  (:beta ...))
+  [:alpha ...]
+  [&else (&through)]
+  [:beta ...])
 
 ;; booleans
 (case (get-thing)
-  (true (&through))
-  (false)) ;; no else
+  [true (&through)]
+  [false]) ;; no else
 
 ;; jumping
+;; case can only be a jump target if it does not bind a symbol
 (case (get-thing)
-  (:alpha (&goto :beta))
+  [:alpha (&goto :beta)]
   :label :somewhere
-  (:beta ...)
-  (:gamma (&goto :somewhere)))
+  [:beta ...]
+  [:gamma (&goto :somewhere)])
 
 ;; combined cases
 (case (get-thing)
-  (^:or [1 3 7]
-    ...)
-  (^:range [8 11] ;; inclusive
-    ...))
+  [^:or [1 3 7]
+   ...]
+  [^:range [8 11] ;; inclusive
+   ...])
+(case (get-thing)
+  [(&or 1 3 7)
+   ...]
+  [(&range 8 11) ;; inclusive
+   ...])
+
+
+(def feature:code-insertion)
+
+;; syntax in question. options: , ~ \ #insert
+;; clojure fns for demo purposes
+;; when unquoting in unquoted code, the underlying data structure is
+;; opaque (does not expand to a regular list) so cannot be produced by a macro
+(case x
+  [0 ...]
+  ~@(into (map (fn [i]
+                 [i `(do...)]))
+      (range 100)))
+"this raises questions about static analysis.
+Perhaps these macros don't need to be evaluated by the lexer.
+Considering refactoring tasks like renaming, would be better if the
+lexer understands the original code and it should be okay
+as long as macro code is independent of names.
+For editing in IDE, it would be useful to evaluate these.
+Perhaps consider providing a limited macro language (eg with map) that is more
+constrained than arbitrary code so it can be understood better. This could be a
+subset of the language that does not have anything allowing loops or IO.
+
+A lot of the language's power is lost if the code is not statically understandable.
+Inline macroexpansions may not be needed in most cases.
+Static analysis may not be as important for where these are used (eg for generating
+data structure definitions like a table)"
+(let table [u8] [~@(range 100)])
+
+"Templates"
+(doflow
+  (let mystring "...")
+  (dosome
+    (let-templates [s= `(std/mem/= mystring %)
+                    case' `(when (s-is %1) %2)])
+    (case' "alpha"
+      ...)
+    (when (or (s= "beta")
+            (s= "bravo"))
+      ...)
+    (case' "gamma"
+      ...)
+    (when (s-is "delta")
+      ...)))
+
+"May be better if all macros used a programmatic interfact to reduce dependence on names and syntax"

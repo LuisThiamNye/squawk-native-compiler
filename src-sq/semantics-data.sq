@@ -1,4 +1,7 @@
 
+(defstruct Node
+  ())
+
 (defstruct Jumppad-Clause
   (:label Node)
   (:expr Node))
