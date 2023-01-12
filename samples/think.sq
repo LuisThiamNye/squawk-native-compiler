@@ -196,6 +196,12 @@ myfn (fn [(method-ctx ^:use *MethodCtx)
   ; :temp-allocator
   :user-data)
 
+;; implicit contextual parameters
+(fn f [::x y] ...)
+(with-params [::x 2]
+  (f 5))
+(f 2 5)
+
 ;; code
 ;;;;;;;;;;;;;;
 
