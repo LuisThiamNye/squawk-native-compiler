@@ -182,7 +182,6 @@ builder_accept_parser_msg :: proc(builder: ^FromParserBuilder, psr: ^parser.Ctx,
 		builder_add_sibling(builder, {tag=tag, value={token=string(token)}})
 	case .coll_start:
 		depth := len(builder.stack)+1
-		fmt.println(len(builder.stack))
 		if depth > builder.max_depth {builder.max_depth = depth}
 		builder_push(builder, NodeBuilder_Coll{tag=coll_type_to_ast_tag(msg.coll_type), children=new([dynamic]AstNode)})
 	case .coll_end:

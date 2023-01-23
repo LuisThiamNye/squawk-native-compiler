@@ -11,6 +11,8 @@ Spec :: union {
 	Spec_Number,
 }
 
+void_spec : Spec = Spec_Fixed{typeinfo=Type_Void{}}
+
 Spec_Number :: struct {}
 
 Spec_NonVoid :: struct {}

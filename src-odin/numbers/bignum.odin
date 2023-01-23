@@ -68,7 +68,7 @@ int_array_mul_then_add :: proc($D: typeid, bits_per_word: uint, slice: []$T, coe
 
 Type_Info_Integer :: runtime.Type_Info_Integer
 
-int_str_to_slice :: proc($TWord: typeid, $TDouble: typeid, str: string, $radix: u64) -> []TWord
+int_str_to_mag :: proc($TWord: typeid, $TDouble: typeid, str: string, $radix: u64) -> []TWord
 	where
 		intrinsics.type_is_integer(TWord) {
 		// @Nextgen make constant

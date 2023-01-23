@@ -1,5 +1,7 @@
 package bytecode_runner
 
+// 64-bit little endian architecture
+
 Opcode :: enum u8 {
 	// RISC-V inspiration
 	// arithmetric operations on registers (64-bit)

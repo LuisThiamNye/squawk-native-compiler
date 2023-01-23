@@ -1,4 +1,6 @@
+package bytecode_builder
 
+/*
 SpecialisedNode :: union {
 	Node_Do,
 	Node_Branch,
@@ -93,3 +95,4 @@ Node_ProcInvoke :: struct {
 	proc_info: ^ProcInfo
 	arg_nodes: []Node,
 }
+*/

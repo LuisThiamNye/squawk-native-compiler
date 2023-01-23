@@ -18,18 +18,18 @@ test_bignums :: proc(t: ^testing.T) {
 	expect_value(t, radix_of_int(32, 10), 0x3b9aca00)
 	expect_value(t, radix_of_int(64, 10), 0x8AC7230489E80000)
 
-	mag1 := int_str_to_slice(u64, u128, "0", 10)
+	mag1 := int_str_to_mag(u64, u128, "0", 10)
 	expect_value(t, len(mag1), 0)
 
-	mag2 := int_str_to_slice(u64, u128, "10", 10)
+	mag2 := int_str_to_mag(u64, u128, "10", 10)
 	expect_value(t, len(mag2), 1)
 	expect_value(t, mag2[0], 10)
 
-	mag3 := int_str_to_slice(u64, u128, "18446744073709551615", 10)
+	mag3 := int_str_to_mag(u64, u128, "18446744073709551615", 10)
 	expect_value(t, len(mag3), 1)
 	expect_value(t, mag3[0], 18446744073709551615)
 
-	mag4 := int_str_to_slice(u64, u128, "18446744073709551616", 10)
+	mag4 := int_str_to_mag(u64, u128, "18446744073709551616", 10)
 	expect_value(t, len(mag4), 2)
 	expect_value(t, mag4[0], 1)
 	expect_value(t, mag4[1], 0)

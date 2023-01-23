@@ -3,16 +3,133 @@ package bytecode_runner
 import "core:fmt"
 import "core:mem"
 
-run_frame :: proc(frame: ^StackFrame) {
-	using frame
-	
+print_codes :: proc(using procinfo: ^ProcInfo) {
+	pc := 0
 	for {
-		if pc >= len(code) {
-			fmt.println("error: ran out of bytes")
+		if pc == len(code) {
+			return
+		}
+		if pc > len(code) {
+			fmt.println("error: ran out of bytes at pc", pc, ", len ", len(code))
 			return
 		}
 
 		op := cast(Opcode) code[pc]
+		fmt.printf("% 3d: %-10v ", pc, op)
+		#partial switch op {
+
+		// src1 reg, src2 reg, dest reg
+		case .add_int, .sub_int, .mul_int, .div_sint, .div_uint, .rem_sint, .rem_uint,
+		.and, .or, .xor, .shiftl, .shiftr, .ashiftr:
+			fmt.printf("%v, %v -> %v", code[pc+1], code[pc+2], code[pc+3])
+			pc+=3
+
+		// src1 reg, immediate(2), dest reg
+		case .addi_int:
+			imm := (cast(int) code[pc+2]<<8) | cast(int) code[pc+3]
+			fmt.printf("%v, '%v -> %v", code[pc+1], imm, code[pc+4])
+			pc+=4
+
+		// src1 reg, imm, dest reg
+		case .andi, .ori, .xori, .shiftli, .shiftri, .ashiftri:
+			fmt.printf("%v, '%v -> %v", code[pc+1], code[pc+2], code[pc+3])
+			pc+=3
+
+		// pool offset(2), nbytes, leftmost dest reg
+		case .ldc_raw: 
+			pool_offset := (cast(int) code[pc+1]<<8) | cast(int) code[pc+2]
+			nbytes := code[pc+3]
+			left_word_offset := code[pc+4]
+			fmt.printf("%v, %vB -> %v ;", pool_offset, nbytes, left_word_offset)
+
+			data_ptr := mem.ptr_offset(cast(^u8) constant_pool.raw_data, pool_offset)
+			nwords := ((nbytes-1)>>3)+1
+
+			assert(nbytes>0)
+			byte_idx := 0
+			word_idx := 0
+			for {
+				word : u64 = 0
+				i : uint = 0
+				for {
+					word |= cast(u64) mem.ptr_offset(data_ptr, byte_idx)^<<(i*8)
+					byte_idx += 1
+					if byte_idx == cast(int) nbytes || i==7 {break}
+					i += 1
+				}
+				fmt.print("",word)
+				word_idx += 1
+				if word_idx==cast(int)nwords {break}
+			}
+
+			pc+=4
+
+		// ptr reg, imm offset (2, s16), dest reg
+		case .load_64, .load_32, .load_u32, .load_16, .load_u16, .load_8, .load_u8:
+			imm := (cast(int) code[pc+2]<<8) | cast(int) code[pc+3]
+			fmt.printf("@%v, offset '%v -> %v", code[pc+1], imm, code[pc+4])
+
+		// src reg, ptr reg, imm offset (2, s16)
+		case .store_64, .store_32, .store_16, .store_8:
+			imm := (cast(int) code[pc+3]<<8) | cast(int) code[pc+4]
+			fmt.printf("%v -> @%v, offset '%v", code[pc+1], code[pc+2], imm)
+			pc+=4
+
+		case .copy: // from reg, to reg
+			fmt.printf("%v -> %v", code[pc+1], code[pc+2])
+			pc+=2
+
+		case .call: // proc idx (2), arg reg... ret reg...
+			pc+=2
+			proc_idx := (cast(int) code[pc-1]<<8) + cast(int) code[pc]
+			subprocinfo := constant_pool.procedures[proc_idx]
+
+			for i in 0..<subprocinfo.nparams { // load args into memory array
+				pc+=1
+				fmt.print(code[pc], "")
+			}
+			fmt.print("->")
+			for i in 0..<subprocinfo.nreturns { // give subframe reg to set returns in
+				pc+=1
+				fmt.print("", code[pc])
+			}
+
+		case .ret: // ret registers...
+			for i in 0..<nreturns {
+				pc+=1
+				fmt.print(code[pc], "")
+			}
+
+		case .goto: // new pc(3)
+			target := (cast(int) code[pc+1]<<16) + (cast(int) code[pc+2]<<8) + cast(int) code[pc+3]
+			fmt.print(target)
+			pc += 3
+
+		// rs1, rs2, new pc(3)
+		case .beq, .bne, .bge, .bgeu, .blt, .bltu:
+			target := (cast(int) code[pc+3]<<16) + (cast(int) code[pc+4]<<8) + cast(int) code[pc+5]
+			fmt.printf("%v, %v goto %v", code[pc+1], code[pc+2], target) 
+			pc+=5
+
+		case:
+			fmt.println("error: invalid bytecode op", op, cast(u8) op)
+			return
+		}
+		fmt.println()
+		pc+=1
+	}
+}
+
+run_frame :: proc(using frame: ^StackFrame) {
+	
+	for {
+		if pc >= len(code) {
+			fmt.println("error: ran out of bytes at pc", pc, ", len ", len(code))
+			return
+		}
+
+		op := cast(Opcode) code[pc]
+		fmt.printf("Op %v: %v\n", pc, op)
 		#partial switch op {
 
 		case .add_int: // src1 reg, src2 reg, dest reg
@@ -22,6 +139,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := mem.ptr_offset(cast(^u64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 + x2
+			pc += 1
 
 		case .addi_int: // src1 reg, immediate(2), dest reg
 			pc+=1
@@ -30,6 +148,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := (cast(u64) code[pc]<<8)+ cast(u64) code[pc+1]
 			pc+=2
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 + x2
+			pc += 1
 
 		case .sub_int: // src1 reg, src2 reg, dest reg
 			pc+=1
@@ -38,6 +157,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := mem.ptr_offset(cast(^u64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 - x2
+			pc += 1
 
 		case .mul_int: // src1 reg, src2 reg, dest reg
 			pc+=1
@@ -46,6 +166,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := mem.ptr_offset(cast(^u64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 * x2
+			pc += 1
 
 		case .div_sint: // src1 reg, src2 reg, dest reg
 			pc+=1
@@ -54,6 +175,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := mem.ptr_offset(cast(^i64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^i64) memory, code[pc])^ = x1 / x2
+			pc += 1
 
 		case .div_uint: // src1 reg, src2 reg, dest reg
 			pc+=1
@@ -62,6 +184,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := mem.ptr_offset(cast(^u64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 / x2
+			pc += 1
 
 		case .rem_sint: // src1 reg, src2 reg, dest reg
 			pc+=1
@@ -70,6 +193,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := mem.ptr_offset(cast(^i64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^i64) memory, code[pc])^ = x1 % x2
+			pc += 1
 
 		case .rem_uint: // src1 reg, src2 reg, dest reg
 			pc+=1
@@ -78,6 +202,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := mem.ptr_offset(cast(^u64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 % x2
+			pc += 1
 
 
 		case .and: // src1 reg, src2 reg, dest reg
@@ -87,6 +212,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := mem.ptr_offset(cast(^u64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 & x2
+			pc += 1
 
 		case .or: // src1 reg, src2 reg, dest reg
 			pc+=1
@@ -95,6 +221,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := mem.ptr_offset(cast(^u64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 | x2
+			pc += 1
 
 		case .xor: // src1 reg, src2 reg, dest reg
 			pc+=1
@@ -103,6 +230,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := mem.ptr_offset(cast(^u64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 ~ x2
+			pc += 1
 
 		case .andi: // src1 reg, imm, dest reg
 			pc+=1
@@ -111,6 +239,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := cast(u64) code[pc]
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 & x2
+			pc += 1
 
 		case .ori: // src1 reg, imm, dest reg
 			pc+=1
@@ -119,6 +248,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := cast(u64) code[pc]
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 | x2
+			pc += 1
 
 		case .xori: // src1 reg, imm, dest reg
 			pc+=1
@@ -127,6 +257,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			x2 := cast(u64) code[pc]
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x1 ~ x2
+			pc += 1
 
 		case .shiftl: // src1 reg, src2 reg, dest reg
 			pc+=1
@@ -135,6 +266,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			shift := mem.ptr_offset(cast(^u64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x << shift
+			pc += 1
 
 		case .shiftr: // src1 reg, src2 reg, dest reg
 			pc+=1
@@ -143,6 +275,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			shift := mem.ptr_offset(cast(^u64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x >> shift
+			pc += 1
 
 		case .ashiftr: // src1 reg, src2 reg, dest reg
 			pc+=1
@@ -151,6 +284,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			shift := mem.ptr_offset(cast(^u64) memory, code[pc])^
 			pc+=1
 			mem.ptr_offset(cast(^i64) memory, code[pc])^ = x >> shift
+			pc += 1
 
 		case .shiftli: // src1 reg, imm shift, dest reg
 			pc+=1
@@ -159,6 +293,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			shift := code[pc]
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x << shift
+			pc += 1
 
 		case .shiftri: // src1 reg, imm shift, dest reg
 			pc+=1
@@ -167,6 +302,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			shift := code[pc]
 			pc+=1
 			mem.ptr_offset(cast(^u64) memory, code[pc])^ = x >> shift
+			pc += 1
 
 		case .ashiftri: // src1 reg, imm shift, dest reg
 			pc+=1
@@ -175,6 +311,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			shift := code[pc]
 			pc+=1
 			mem.ptr_offset(cast(^i64) memory, code[pc])^ = x >> shift
+			pc += 1
 
 		case .ldc_raw: // pool offset(2), nbytes, leftmost dest reg
 			pc+=2
@@ -183,25 +320,26 @@ run_frame :: proc(frame: ^StackFrame) {
 			nbytes := code[pc]
 			data_ptr := mem.ptr_offset(cast(^u8) constant_pool.raw_data, pool_offset)
 			nwords := ((nbytes-1)>>3)+1
-
+			
 			pc+=1
 			left_word_offset := code[pc]
-			byte_idx := nbytes
-			assert(byte_idx>0)
-			word_idx := nwords
-			word_loop: for {
-				word_idx -= 1
+			assert(nbytes>0)
+			byte_idx := 0
+			word_idx := 0
+			for {
 				word : u64 = 0
 				i : uint = 0
 				for {
-					byte_idx -= 1
 					word |= cast(u64) mem.ptr_offset(data_ptr, byte_idx)^<<(i*8)
-					if byte_idx == 0 || i==7 {break}
+					byte_idx += 1
+					if byte_idx == cast(int)nbytes || i==7 {break}
 					i += 1
 				}
-				mem.ptr_offset(cast(^u64) memory, left_word_offset+word_idx)^ = word
-				if word_idx == 0 {break}
+				mem.ptr_offset(cast(^u64) memory, cast(int)left_word_offset+word_idx)^ = word
+				word_idx += 1
+				if word_idx == cast(int)nwords {break}
 			}
+			pc += 1
 
 		case .load_64: // ptr reg, imm offset (2, s16), dest reg
 			pc+=1
@@ -210,6 +348,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			offset := (cast(int) code[pc]<<8) + cast(int) code[pc+1]
 			pc+=2
 			mem.ptr_offset(cast(^i64) memory, code[pc])^ = mem.ptr_offset(base_ptr, offset)^
+			pc += 1
 
 		case .load_32: // ptr reg, imm offset (2, s16), dest reg
 			pc+=1
@@ -218,6 +357,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			offset := (cast(int) code[pc]<<8) + cast(int) code[pc+1]
 			pc+=2
 			mem.ptr_offset(cast(^i32) memory, code[pc])^ = mem.ptr_offset(base_ptr, offset)^
+			pc += 1
 
 		case .load_u32: // ptr reg, imm offset (2, s16), dest reg
 			pc+=1
@@ -226,6 +366,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			offset := (cast(int) code[pc]<<8) + cast(int) code[pc+1]
 			pc+=2
 			mem.ptr_offset(cast(^u32) memory, code[pc])^ = mem.ptr_offset(base_ptr, offset)^
+			pc += 1
 
 		case .load_16: // ptr reg, imm offset (2, s16), dest reg
 			pc+=1
@@ -234,6 +375,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			offset := (cast(int) code[pc]<<8) + cast(int) code[pc+1]
 			pc+=2
 			mem.ptr_offset(cast(^i16) memory, code[pc])^ = mem.ptr_offset(base_ptr, offset)^
+			pc += 1
 
 		case .load_u16: // ptr reg, imm offset (2, s16), dest reg
 			pc+=1
@@ -242,6 +384,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			offset := (cast(int) code[pc]<<8) + cast(int) code[pc+1]
 			pc+=2
 			mem.ptr_offset(cast(^u16) memory, code[pc])^ = mem.ptr_offset(base_ptr, offset)^
+			pc += 1
 
 		case .load_8: // ptr reg, imm offset (2, s16), dest reg
 			pc+=1
@@ -250,6 +393,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			offset := (cast(int) code[pc]<<8) + cast(int) code[pc+1]
 			pc+=2
 			mem.ptr_offset(cast(^i8) memory, code[pc])^ = mem.ptr_offset(base_ptr, offset)^
+			pc += 1
 
 		case .load_u8: // ptr reg, imm offset (2, s16), dest reg
 			pc+=1
@@ -258,6 +402,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			offset := (cast(int) code[pc]<<8) + cast(int) code[pc+1]
 			pc+=2
 			mem.ptr_offset(cast(^u8) memory, code[pc])^ = mem.ptr_offset(base_ptr, offset)^
+			pc += 1
 
 		case .store_64: // src reg, ptr reg, imm offset (2, s16)
 			pc+=1
@@ -269,6 +414,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			pc+=1
 			offset := offset_high + cast(int) code[pc]
 			mem.ptr_offset(base_ptr, offset)^ = data
+			pc += 1
 
 		case .store_32: // src reg, ptr reg, imm offset (2, s16)
 			pc+=1
@@ -280,6 +426,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			pc+=1
 			offset := offset_high + cast(int) code[pc]
 			mem.ptr_offset(base_ptr, offset)^ = data
+			pc += 1
 
 		case .store_16: // src reg, ptr reg, imm offset (2, s16)
 			pc+=1
@@ -291,6 +438,7 @@ run_frame :: proc(frame: ^StackFrame) {
 			pc+=1
 			offset := offset_high + cast(int) code[pc]
 			mem.ptr_offset(base_ptr, offset)^ = data
+			pc += 1
 
 		case .store_8: // src reg, ptr reg, imm offset (2, s16)
 			pc+=1
@@ -302,10 +450,11 @@ run_frame :: proc(frame: ^StackFrame) {
 			pc+=1
 			offset := offset_high + cast(int) code[pc]
 			mem.ptr_offset(base_ptr, offset)^ = data
+			pc += 1
 
 		case .copy: // from reg, to reg
-			mem.ptr_offset(cast(^u64) memory, code[pc+1])^ = mem.ptr_offset(cast(^u64) memory, code[pc+2])^
-			pc+=2
+			mem.ptr_offset(cast(^u64) memory, code[pc+2])^ = mem.ptr_offset(cast(^u64) memory, code[pc+1])^
+			pc+=3
 
 		case .call: // proc idx (2), arg reg... ret reg...
 			fmt.println("call")
@@ -327,6 +476,7 @@ run_frame :: proc(frame: ^StackFrame) {
 				return_offsets[i]=code[pc]
 			}
 			run_frame(frame)
+			pc += 1
 
 		case .ret: // ret registers...
 			fmt.println("return")
@@ -348,7 +498,7 @@ run_frame :: proc(frame: ^StackFrame) {
 				pc+=2
 				pc = (cast(int) code[pc]<<16) + (cast(int) code[pc+1]<<8) + cast(int) code[pc+2]
 			} else {
-				pc += 4
+				pc += 5
 			}
 
 		case .bne: // rs1, rs2, new pc(3)
@@ -357,7 +507,7 @@ run_frame :: proc(frame: ^StackFrame) {
 				pc+=2
 				pc = (cast(int) code[pc]<<16) + (cast(int) code[pc+1]<<8) + cast(int) code[pc+2]
 			} else {
-				pc += 4
+				pc += 5
 			}
 
 		case .bge: // rs1, rs2, new pc(3)
@@ -366,7 +516,7 @@ run_frame :: proc(frame: ^StackFrame) {
 				pc+=2
 				pc = (cast(int) code[pc]<<16) + (cast(int) code[pc+1]<<8) + cast(int) code[pc+2]
 			} else {
-				pc += 4
+				pc += 5
 			}
 
 		case .bgeu: // rs1, rs2, new pc(3)
@@ -375,7 +525,7 @@ run_frame :: proc(frame: ^StackFrame) {
 				pc+=2
 				pc = (cast(int) code[pc]<<16) + (cast(int) code[pc+1]<<8) + cast(int) code[pc+2]
 			} else {
-				pc += 4
+				pc += 5
 			}
 
 		case .blt: // rs1, rs2, new pc(3)
@@ -384,7 +534,7 @@ run_frame :: proc(frame: ^StackFrame) {
 				pc+=2
 				pc = (cast(int) code[pc]<<16) + (cast(int) code[pc+1]<<8) + cast(int) code[pc+2]
 			} else {
-				pc += 4
+				pc += 5
 			}
 
 		case .bltu: // rs1, rs2, new pc(3)
@@ -393,14 +543,13 @@ run_frame :: proc(frame: ^StackFrame) {
 				pc+=2
 				pc = (cast(int) code[pc]<<16) + (cast(int) code[pc+1]<<8) + cast(int) code[pc+2]
 			} else {
-				pc += 4
+				pc += 5
 			}
 
 		case:
 			fmt.println("error: invalid bytecode op", op, cast(u8) op)
 			return
 		}
-		pc+=1
 	}
 }
 
@@ -410,6 +559,13 @@ make_frame :: proc(nwords: int, code: []u8, return_memory: rawptr, return_offset
 	frame := new(StackFrame, context.temp_allocator)
 	frame^ = {pc=0, code=code, memory=memory, return_memory=return_memory,
 		return_offsets = return_offsets}
+	return frame
+}
+
+make_frame_from_procinfo :: proc(using procinfo: ^ProcInfo) -> ^StackFrame {
+	memory := mem.alloc(size=memory_nwords, allocator=context.temp_allocator)
+	frame := make_frame(memory_nwords, code[:], memory, {0})
+	frame.constant_pool = procinfo.constant_pool
 	return frame
 }
 
