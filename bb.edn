@@ -1,0 +1,98 @@
+{:tasks
+ {:requires ([babashka.fs :as fs]
+             [clojure.string :as str])
+  
+  odin (shell "odin" "run" "./src-odin"
+         "-collection:skia=./skia"
+         )
+  
+  ;; Type size generator
+  ;;;;;;;;;;;
+  sksizegen
+  (do 
+    (shell "clang++" "-O0"
+      "-o" "skia/sksizegen.exe"
+      "-Wno-microsoft-include"
+      "./skia/_sizes_gen.cc"
+      "-std=c++17"
+      "-I" "/me/lib/skia/"
+      )
+    (shell {:dir "./skia"} "skia/sksizegen.exe")
+    (let [input (slurp "skia/sizes.txt")
+          lines (str/split-lines input)]
+      (loop [i 0
+             out "package vis\n"]
+        (if (< i (count lines))
+          (let [[_ cls size] (re-matches (re-pattern "(\\w+) (\\d+)") (nth lines i))]
+            (recur (inc i)
+              (str out "size_of_" cls " :: " size "\n")))
+          (spit "src-odin/vis/_skia_sizes.odin" out))))
+    )
+  
+  ;; Bindings generator
+  ;;;;;;;;;;;
+  
+  ;; copy over the headers
+  ;;headers (fs/copy-tree "/me/lib/skia/include/" "./skia/include"
+  ;;          {:replace-existing true})
+  
+  ;; compile bindings generator
+  comp-skbindgen
+  (shell "odin" "run" "./skia"
+    "-out:skia/skbindgen.exe"
+    "-collection:sq=./src-odin"
+    )
+  ;; generate the final skia .lib from the declaration
+  skbindgen
+  (do (shell "skia/skbindgen.exe")
+    (run 'skc)
+    (run 'sklib))
+  
+  ;; compile the bindings object file
+  skc (shell "clang++" "-static" "-c" "-O3"
+        "-o" "skia/skiabindings.lib"
+        "-Wno-microsoft-include"
+        "./skia/bindings.cc"
+        "-std=c++17"
+        "-I" "/me/lib/skia/"
+        )
+  ;; statically link bindings + skia into a single file
+  sklib (shell "/Program Files (x86)/Microsoft Visual Studio/2019/Community/VC/Tools/MSVC/14.29.30133/bin/Hostx64/x64/lib.exe"
+          "/OUT:skia/skia.lib"
+          "skia/skiabindings.lib"
+          ;(fs/path "/me/lib/skia-rs/skia.lib")
+          (fs/path "/me/lib/skia/out/Static-d3d/skia.lib")
+          ;"C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.19041.0\\um\\x64\\OpenGL32.Lib"
+          ;(fs/path "/me/lib/skia/out/Static/sksg.lib")
+          "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/um/x64/d3d12.lib"
+          "C:/Program Files (x86)/Windows Kits/10/Lib/10.0.19041.0/um/x64/d3dcompiler.lib"
+          )
+  
+  
+  ;; Build Skia
+  ;; configure the skia build
+  skconfig
+  (shell {:dir "/me/lib/skia"} "/me/lib/skia/bin/gn.exe"
+    "gen" "out/Static-d3d"
+    (str "--args="
+      "is_official_build=true"
+      " is_debug=false"
+      " skia_use_direct3d=true"
+      " skia_use_angle=false"
+      " skia_use_gl=false"
+      " skia_use_system_freetype2=false"
+      " extra_cflags=[\"-DSK_FONT_HOST_USE_SYSTEM_SETTINGS\"]"
+      " skia_enable_skottie=true"
+      " skia_use_system_zlib=false"
+      " skia_use_system_libjpeg_turbo=false"
+      " skia_use_system_harfbuzz=false"
+      " skia_use_system_expat=false"
+      " skia_use_system_icu=false"
+      " skia_use_system_libpng=false"
+      " skia_use_system_libwebp=false"
+      ))
+  ;; build skia from source
+  skbuild
+  (shell {:dir "/me/lib/skia"} "/me/lib/skia/third_party/ninja/ninja.exe"
+    "-C" "./out/Static-d3d")
+  }}

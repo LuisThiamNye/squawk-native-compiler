@@ -15,10 +15,13 @@ ConstantEntry :: struct {
 
 LocalTempTableEntry :: struct{temp:^Temp, local:^sem.Local}
 
+JumpIdxsTableEntry :: struct{jump_target:^sem.JumpTarget, idxs: ^[dynamic]int}
+
 BcBuilder :: struct {
 	codes: [dynamic]u8,
 	temps: [dynamic]Temp,
 	local_temp_table: [dynamic]LocalTempTableEntry,
+	jump_idxs_table: [dynamic]JumpIdxsTableEntry, 
 	constants: [dynamic]ConstantEntry,
 }
 
@@ -31,8 +34,6 @@ ProcConstantPool :: bytecode_runner.ProcConstantPool
 Opcode :: bytecode_runner.Opcode
 
 SemNode :: sem.SemNode
-
-TempId :: int
 
 builder_allocate_temp :: proc(using builder: ^BcBuilder) -> ^Temp {
 	idx := cast(u8) len(builder.temps)
@@ -104,6 +105,73 @@ builder_emit_expr_to_temp :: proc(builder: ^BcBuilder, rettemp: ^Temp, using sem
 			fmt.panicf("no temp found for local %v\nin %v", local, builder.local_temp_table)
 		}
 		append_elems(&builder.codes, cast(u8) Opcode.copy, temp.idx, rettemp.idx)
+	case sem.Sem_Assign:
+		local := node.local
+		temp : ^Temp
+		for e in builder.local_temp_table {
+			if e.local==local {
+				temp = e.temp
+			}
+		}
+		if temp==nil {
+			fmt.panicf("no temp found for local %v\nin %v", local, builder.local_temp_table)
+		}
+		val_temp := builder_allocate_temp(builder)
+		builder_emit_expr_to_temp(builder, val_temp, node.val_node)
+		append_elems(&builder.codes, cast(u8) Opcode.copy, val_temp.idx, temp.idx)
+	case sem.Sem_If:
+		using builder
+		temp := builder_allocate_temp(builder)
+		builder_emit_expr_to_temp(builder, temp, node.test_node)
+
+		temp_zero := builder_allocate_temp(builder)
+		zero := new(u8)
+		zero^ = 0
+		builder_emit_constant(builder, zero^, temp_zero)
+		append_elems(&codes, cast(u8) Opcode.beq, temp.idx, temp_zero.idx)
+		else_jump_idx := code_append_jumploc(&codes)
+		builder_emit_expr_to_temp(builder, rettemp, node.then_node)
+		append_elems(&codes, cast(u8) Opcode.goto)
+		end_jump_idx := code_append_jumploc(&codes)
+
+		write_jumploc(&codes, else_jump_idx, len(codes))
+		builder_emit_expr_to_temp(builder, rettemp, node.else_node)
+		write_jumploc(&codes, end_jump_idx, len(codes))
+	case sem.Sem_Jumppad:
+		using builder
+
+		jumps := make([][dynamic]int, len(node.dest_nodes))
+		for _jump, i in jumps {
+			entry := JumpIdxsTableEntry{jump_target=&node.jump_targets[i], idxs=&jumps[i]}
+			append(&jump_idxs_table, entry)
+		}
+
+		init_node := node.init_node
+		if init_node != nil {
+			builder_emit_expr_to_temp(builder, rettemp, init_node)
+		}
+		jump_targets := make([]int, len(node.dest_nodes))
+		for _sub, i in node.dest_nodes {
+			jump_targets[i] = len(codes)
+			builder_emit_expr_to_temp(builder, rettemp, &node.dest_nodes[i])
+		}
+		for jump_idxs, i in jumps {
+			for jump_idx in jump_idxs {
+				write_jumploc(&codes, jump_idx, jump_targets[i])
+			}
+		}
+		fmt.println(jumps)
+	case sem.Sem_Goto:
+		using builder
+		for jump, i in jump_idxs_table {
+			if jump.jump_target==node.target {
+				append(&codes, cast(u8) Opcode.goto)
+				jump_idx := code_append_jumploc(&codes)
+				append(jump_idxs_table[i].idxs, jump_idx)
+				return
+			}
+		}
+		panic("no jump target")
 	case:
 		fmt.panicf("unsupported bytecode semnode thing %v", variant)
 	}
@@ -128,10 +196,10 @@ builder_emit_binary_op :: proc(using builder: ^BcBuilder, temp1: ^Temp, temp2: ^
 	one := new(u8)
 	one^ = 1
 	builder_emit_constant(builder, one^, rettemp)
-	write_jumploc(&codes, else_jump_idx, len(codes))
-
 	append_elems(&codes, cast(u8) Opcode.goto)
 	end_jump_idx := code_append_jumploc(&codes)
+
+	write_jumploc(&codes, else_jump_idx, len(codes))
 	zero := new(u8)
 	zero^ = 0
 	builder_emit_constant(builder, zero^, rettemp)

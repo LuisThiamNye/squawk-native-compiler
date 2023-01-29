@@ -536,3 +536,20 @@ Ctx (struct
 (defn [(ctx Ctx)
        (current-node Node
          :or (at (:nodes ctx) (:current-idx ctx)))])
+
+
+;; member references
+
+(do
+  ;; reaches through any pointers to :x
+  (let x (ref-in mystruct [:pos :x]))
+  ;; x has no exact runtime value - depends on how it is used
+  ;; to set the value of x (reaching through all pointers)
+  (set x 8)
+  ;; if x is a pointer to a number, the pointer can be set
+  ;; by type inference
+  ;; if x is not a pointer, this should probably not work
+  (set x (new-of 8))
+  ;; instead maybe this, which would always set the dereferenced value
+  ;; going through all pointers, and will dereference the provided data as necessary
+  (setv x (new-of 8)))

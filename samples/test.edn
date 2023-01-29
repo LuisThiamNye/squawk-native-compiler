@@ -1,6 +1,11 @@
 (do
-  (let x 2)
-  (= 4 x))
+  (let x 0)
+  (jumppad :loop
+    (if (= 5 x)
+      1
+      (do
+        (set x 5)
+        (goto :loop)))))
 
 ;(as u8 5)
 

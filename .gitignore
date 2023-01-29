@@ -4,3 +4,9 @@ zig-out
 zig-cache
 *.sublime-workspace
 *.exe
+skia/include
+*.lib
+_*.txt
+_*.cc
+_*.odin
+skia/bindings.cc

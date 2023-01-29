@@ -10,10 +10,11 @@ import "numbers"
 import "parser"
 import "semantics"
 import "ast"
+import "vis"
 
 println :: fmt.println
 
-main :: proc() {
+compile_sample :: proc() {
 	// bytecode_runner.run()
 	// numbers.test_bignums()
 	// codebuf, ok := os.read_entire_file_from_filename("samples/controlflowideas.sq")
@@ -91,4 +92,8 @@ main :: proc() {
 	}
 
 	fmt.println("done")
+}
+
+main :: proc() {
+	vis.main()
 }

@@ -1,0 +1,8 @@
+{
+	"collections": [
+		{"name": "skia", "path": "./skia"},
+		{"name": "sq", "path": "./src-odin"}
+	],
+	"enable_hover": true,
+	"enable_document_symbols": false,
+}
