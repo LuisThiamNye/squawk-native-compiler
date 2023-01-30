@@ -18,15 +18,15 @@
       "-I" "/me/lib/skia/"
       )
     (shell {:dir "./skia"} "skia/sksizegen.exe")
-    (let [input (slurp "skia/sizes.txt")
+    (let [input (slurp "skia/_sizes.txt")
           lines (str/split-lines input)]
       (loop [i 0
-             out "package vis\n"]
+             out "package skia\n"]
         (if (< i (count lines))
           (let [[_ cls size] (re-matches (re-pattern "(\\w+) (\\d+)") (nth lines i))]
             (recur (inc i)
               (str out "size_of_" cls " :: " size "\n")))
-          (spit "src-odin/vis/_skia_sizes.odin" out))))
+          (spit "src-odin/skia/_skia_sizes.odin" out))))
     )
   
   ;; Bindings generator
@@ -42,6 +42,7 @@
     "-out:skia/skbindgen.exe"
     "-collection:sq=./src-odin"
     )
+  
   ;; generate the final skia .lib from the declaration
   skbindgen
   (do (shell "skia/skbindgen.exe")
@@ -52,7 +53,7 @@
   skc (shell "clang++" "-static" "-c" "-O3"
         "-o" "skia/skiabindings.lib"
         "-Wno-microsoft-include"
-        "./skia/bindings.cc"
+        "./skia/custom.cc"
         "-std=c++17"
         "-I" "/me/lib/skia/"
         )

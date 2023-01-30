@@ -136,10 +136,21 @@ gen_bindings :: proc() {
 			t = t[1:]
 			ptrP = true
 		}
+		refP := false
+		if t[0]=='&' {
+			t = t[1:]
+			refP = true
+		}
 		if t in type_aliases {
 			t = type_aliases[t]
 		}
 		if ptrP {
+			t2 := make([]u8, len(t)+1)
+			mem.copy(&t2[0], raw_data(t), len(t))
+			t2[len(t2)-1] = '*'
+			t = string(t2)
+		}
+		if refP {
 			t2 := make([]u8, len(t)+1)
 			mem.copy(&t2[0], raw_data(t), len(t))
 			t2[len(t2)-1] = '*'
@@ -282,6 +293,10 @@ gen_bindings :: proc() {
 							for i in 0..<nargs {
 								if i>0 {
 									ca_append(&code, ",")
+								}
+								typedecl := sigdecl.children[i]
+								if typedecl.token[0]=='&' {
+									ca_append(&code, cast(u8) '*')
 								}
 								ca_append(&code, cast(u8) 'a')
 								ca_append(&code, fmt.tprintf("%v", i))

@@ -1,4 +1,6 @@
-
+(type Scalar SkScalar)
+(type Paint SkPaint)
+(type Rect SkRect)
 (type Colour4f SkColor4f)
 (type ColourSpace SkColorSpace)
 (type Colour u32)
@@ -7,7 +9,7 @@
 (class Paint
   (:init [])
   (:deinit [])
-  ; (:new [])
+  (:new [])
   ; (new-clone)
   (reset [])
   (anti-alias? [> bool])
@@ -23,18 +25,28 @@
   (set-colour4f [Colour4f *ColourSpace] setColor4f)
   )
 
-#_(class Surface
-  :static
-  (make-raster-direct []))
+(type Canvas SkCanvas)
+(class Surface
+  (get-canvas [> *Canvas])
+  (flush [])
+  ; :static
+  ; (make-raster-direct [])
+  )
 
-#_(class Canvas
-  ())
+(class Canvas
+  (clear [Colour])
+  (draw-circle [Scalar Scalar Scalar &Paint])
+  (draw-rect [&Rect &Paint]))
 
-(class ImageInfo
+(struct ImageInfo
   (:init [])
   (width [> int])
   (height [> int])
   :static
   ;; Open question: how to handle reference counting
   ;; keep the refcounted stuff hidden within the C++ side?
-  (make [int int ColourType AlphaType]))
+  #_(make [int int ColourType AlphaType]))
+
+(class RefCnt
+  (ref [])
+  (unref []))
