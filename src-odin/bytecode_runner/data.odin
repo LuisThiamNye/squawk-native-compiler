@@ -64,6 +64,7 @@ Opcode :: enum u8 {
 	bltu,
 
 	call,
+	call_c,
 	ret,
 
 	// floating point
@@ -99,10 +100,24 @@ StackFrame :: struct {
 	code: []u8,
 	memory: rawptr,
 	constant_pool: ProcConstantPool,
+	foreign_procs: []ForeignProc,
 
-	// nreturns: u8,
 	return_memory: rawptr,
 	return_offsets: []u8,
+}
+
+ForeignProc_C_Type :: enum {
+	void, bool, char, short, int, long, longlong, float, double, pointer, aggregate,
+}
+
+ForeignProc :: struct {
+	proc_ptr: rawptr,
+	convention: u8,
+	ret_type: ForeignProc_C_Type,
+	nparams: int,
+	param_types: []ForeignProc_C_Type,
+	symbol: string,
+	lib_path: string,
 }
 
 ProcInfo :: struct {
@@ -111,6 +126,7 @@ ProcInfo :: struct {
 	code: []u8,
 	memory_nwords: int,
 	constant_pool: ProcConstantPool,
+	foreign_procs: []ForeignProc, // needs to be initialised with proc pointers
 }
 
 ProcConstantPool :: struct {

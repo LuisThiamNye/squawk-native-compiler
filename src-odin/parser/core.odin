@@ -117,8 +117,8 @@ read_token :: proc(using p: ^Ctx, ch0: u8) -> (end_idx: int) {
 
 parse_string :: proc(using p: ^Ctx) -> Message {
 	endx := len(buf)
-	i := next_idx
-	start_idx := i-1
+	start_idx := next_idx
+	i := next_idx+1
 	ret : Message
 	for {
 		if endx == i {
@@ -128,7 +128,7 @@ parse_string :: proc(using p: ^Ctx) -> Message {
 		ch := buf[i]
 		i+=1
 		if ch=='"' {
-			ret = {tag=.comment, start_idx=start_idx, end_idx=i}
+			ret = {tag=.string, start_idx=start_idx, end_idx=i}
 			break
 		}
 		if ch=='\\' {

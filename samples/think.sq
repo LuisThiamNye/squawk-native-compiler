@@ -416,6 +416,76 @@ decimal -> float
   (let x ^:static (do-stuff-at-comptime arg)
     ...))
 
+
+;; Multiple Return
+;; Would probably be best to have a standard calling convention
+;; where the arg & return registers/memory are pre-determined for each function
+;; and do not depend on call site.
+;; Multiple return values should be returned to registers.
+;; There can be a default return value for use in expressions.
+;; Additional return values are meant to be auxiliary information.
+;; Multiple returns could be treated like maps
+(do
+  (let {x :_ y' :y :as pos} (myfn))
+  (:z pos))
+
+;; consdier
+(:x (myfn))
+;; is :x a return value or is it a member of the default return value?
+
+;; perhaps default values are always accessed, unless explicitly otherwise,
+;; and structs can be optimised to be stored in registers, and moved
+;; to memory if required by the caller.
+;; Stack-allocated structs have to be destroyed anyway, so it would make
+;; the data needs to be moved anyway, and so it can be stored in the registers.
+;; But that might be a bad idea if the return struct is often moved back
+;; to memory. Perhaps user could indicate that a return is a struct that
+;; should be returned to registers, implying that the aggregate structure
+;; is not that important.
+;; This is because you may want to have multiple returns, but you want them
+;; to all collectively be the default/expression value, because it does not
+;; make sense for any member to be the default (the intent of the function
+;; is to return an aggregate)
+
+;; could something be done with this?
+(f (myfn arg1 arg2
+     .> [ret1 ret2]
+     (dosomething ret1 ret2)))
+
+;; Good API design would involve not requiring the user to handle possible
+;; errors for every call. API should handle erroneous input so that the
+;; complexity of error handling can be consolidated at certain checkpoints
+
+;; perhaps when nesting functions, there could be a convention where the
+;; compiler understands if an inner function fails, so the caller can shortcut
+;; to some null/error value so that outer functions aren't called with bad input
+(f (g (h)))
+;; note that this can lead to confusing/invisible control flow if some of the
+;; expressions in arg positions are side-effecting
+
+;; maybe we could have
+(do
+  ;;   default return          auxiliary returns
+  (let {x :_ y' :y :as pos} .* {:keys [ok]} (myfn))
+  (:z pos))
+;; or positional?
+(do
+  (let {x :_ y' :y :as pos} .* [itwasok? anotherret] (myfn))
+  (:z pos))
+(do
+  (let {x :_ y' :y :as pos} .+ itwasok? .+ anotherret .* {:as therest} (myfn))
+  (:z pos))
+;; messing with order
+(do
+  (let .<
+    (myfn
+      (that might be
+        (+ quite deep and big)
+        (etc etc etc)))
+    .> {x :_ y' :y :as pos} .+ itwasok? .+ anotherret .* {:as therest})
+  (:z pos))
+
+
 ;; local macros
 (let m (macro [x y] ...)
   (m ...))

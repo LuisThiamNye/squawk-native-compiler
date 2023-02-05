@@ -1,9 +1,11 @@
 (type Scalar SkScalar)
 (type Paint SkPaint)
 (type Rect SkRect)
+(type TextBlob SkTextBlob)
 (type Colour4f SkColor4f)
 (type ColourSpace SkColorSpace)
 (type Colour u32)
+(type Font SkFont)
 (type Paint/Mode SkPaint::Style)
 
 (class Paint
@@ -36,7 +38,18 @@
 (class Canvas
   (clear [Colour])
   (draw-circle [Scalar Scalar Scalar &Paint])
-  (draw-rect [&Rect &Paint]))
+  (draw-rect [&Rect &Paint])
+  (draw-text-blob [*TextBlob Scalar Scalar &Paint])
+  (scale [Scalar Scalar])
+  (rotate [Scalar])
+  (rotate-at [Scalar Scalar Scalar] rotate)
+  (skew [Scalar Scalar])
+  (translate [Scalar Scalar])
+  (get-save-count [> int])
+  (restore-to-count [int])
+  (restore [])
+  (save [> int])
+  (clip-rect [&Rect bool]))
 
 (struct ImageInfo
   (:init [])
@@ -50,3 +63,17 @@
 (class RefCnt
   (ref [])
   (unref []))
+
+(class Font
+  #_(:init [])
+  (text-to-glyphs [*void size_t SkTextEncoding *SkGlyphID int > int])
+  (get-metrics [*SkFontMetrics > Scalar]))
+
+#_(class TextBlob
+  :static
+  (make-from-text [*void size_t &Font SkTextEncoding > ]))
+
+(type FontStyle/Slant SkFontStyle::Slant)
+
+(class FontStyle
+  (:init [int int FontStyle/Slant]))

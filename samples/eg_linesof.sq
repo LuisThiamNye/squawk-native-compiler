@@ -1,0 +1,69 @@
+
+(def-foreign-lib Kernel32 "Kernel32.dll")
+
+; (declare-type-aliases
+;   ; LPVOID rawptr
+;   DWORD u32)
+
+(declare-foreigns Kernel32
+  (GetLastError [] -> u32)
+  (GetProcessHeap [] -> rawptr)
+  (HeapAlloc [(heap rawptr) (flags u32) (nbytes uint)] -> rawptr))
+
+(defn allocate [(nbytes uint)] -> [rawptr]
+  (HeapAlloc (GetProcessHeap) 0 nbytes))
+
+; (defn cstring [(s String)] -> [rawptr]
+;   (do
+;     (let cs (allocate (+ 1 (:count s))))
+;     (set (at cs (:count s)) 0)
+;     cs))
+
+(defn main [] -> [String]
+  (allocate 8))
+
+; (defn main []
+;   (do
+;     (let dir LPCSTR ".\\*")
+;     (let file-data WIN32_FIND_DATA ---)
+;     (let finder (FindFirstFile dir #'file-data))
+;     (when (= INVALID_HANDLE_VALUE finder)
+;       (panic! "failed to FindFirstFile"))
+    
+;     (jumppad :loop
+;       (if (b-and FILE_ATTRIBUTE_DIRECTORY (:dwFileAttributes file-data))
+;         <RECUR>
+;         (do
+;           (let name (:cFileName file-data))
+          
+;           ;; .. check file name
+;           ;; .. get file handle
+          
+;           ;; this is not a simple local. specifics of data representation
+;           ;; are abstracted away
+;           ;; particularly error information
+;           (let ?text (read-entire-file file))
+;           (when (return-is :success ?text)
+;             (let text (as :success ?text))
+;             (let nlines 1)
+;             (let i 0)
+;             (jumppad
+;               :fileit
+;               (when (< i (count text))
+;                 (goto :body-))
+;               :body-
+;               (do
+;                 (let b (at text i))
+;                 (when (= b #ch "\n")
+;                   (set nlines (inc nlines)))
+;                 (set i (inc i))
+;                 (goto :fileit))))
+          
+;           (let res (FindNextFile finder #'file-data))
+;           (when (not= 0 res)
+;             (goto :loop)))))
+    
+;     (let error (GetLastError))
+;     (FindClose finder)
+;     (when (not= error ERROR_NO_MORE_FILES)
+;       (panic! "error!"))))

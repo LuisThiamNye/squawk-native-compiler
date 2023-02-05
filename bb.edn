@@ -2,9 +2,13 @@
  {:requires ([babashka.fs :as fs]
              [clojure.string :as str])
   
-  odin (shell "odin" "run" "./src-odin"
+  odin-build
+  (apply shell "odin" "build" "./src-odin"
          "-collection:skia=./skia"
+         *command-line-args*
          )
+  odin
+  (do (run 'odin-build) (shell "./src-odin.exe"))
   
   ;; Type size generator
   ;;;;;;;;;;;

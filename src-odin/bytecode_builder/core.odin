@@ -2,15 +2,17 @@ package bytecode_builder
 
 import "core:fmt"
 import sem "../semantics"
-import "../bytecode_runner"
+import br "../bytecode_runner"
 
 Temp :: struct {
 	idx: u8,
+	nwords: int,
 }
 
 ConstantEntry :: struct {
 	byte_offset: int,
-	value: any,
+	data: rawptr,
+	nbytes: int,
 }
 
 LocalTempTableEntry :: struct{temp:^Temp, local:^sem.Local}
@@ -20,24 +22,31 @@ JumpIdxsTableEntry :: struct{jump_target:^sem.JumpTarget, idxs: ^[dynamic]int}
 BcBuilder :: struct {
 	codes: [dynamic]u8,
 	temps: [dynamic]Temp,
+	arg_temps: []^Temp,
 	local_temp_table: [dynamic]LocalTempTableEntry,
 	jump_idxs_table: [dynamic]JumpIdxsTableEntry, 
 	constants: [dynamic]ConstantEntry,
+	procedure_ids: [dynamic]^SemNode,
+	procedures: [dynamic]^ProcInfo,
+	procid_to_procinfo: ^map[^SemNode]^ProcInfo,
+	// foreign_proc_ids: [dynamic]sem.Decl_ForeignProc,
+	foreign_procs: [dynamic]br.ForeignProc,
+	// foreign_libs: [dynamic]^sem.Decl_ForeignLib,
 }
 
 append_bytecode :: proc(builder: ^BcBuilder, code: u8) {
 	append(&builder.codes, code)
 }
 
-ProcInfo :: bytecode_runner.ProcInfo
-ProcConstantPool :: bytecode_runner.ProcConstantPool
-Opcode :: bytecode_runner.Opcode
+ProcInfo :: br.ProcInfo
+ProcConstantPool :: br.ProcConstantPool
+Opcode :: br.Opcode
 
 SemNode :: sem.SemNode
 
-builder_allocate_temp :: proc(using builder: ^BcBuilder) -> ^Temp {
+builder_allocate_temp :: proc(using builder: ^BcBuilder, #any_int nwords: int = 1) -> ^Temp {
 	idx := cast(u8) len(builder.temps)
-	append(&temps, Temp{idx=idx})
+	append(&temps, Temp{idx=idx, nwords=nwords})
 	return &temps[idx]
 }
 
@@ -46,16 +55,64 @@ get_pool_nbytes :: proc(constants: [dynamic]ConstantEntry) -> int {
 	if len(constants)>0 {
 		c := constants[len(constants)-1]
 		nbytes = c.byte_offset
-		nbytes += type_info_of(c.value.id).size
+		nbytes += c.nbytes
 	}
 	return nbytes
 }
 
-builder_emit_constant :: proc(using builder: ^BcBuilder, value: any, temp: ^Temp) -> int {
+reference_procedure_idx :: proc(using builder: ^BcBuilder, id: ^SemNode) -> int {
+	idx := 0
+	for it_id in &procedure_ids {
+		if it_id == id {
+			return idx
+		}
+		idx += 1
+	}
+	// create entry if does not exist
+	append(&procedure_ids, id)
+	append(&procedures, procid_to_procinfo[id])
+	return idx
+}
+
+import dc "../dyncall"
+
+reference_foreign_proc_idx :: proc(using builder: ^BcBuilder, decl: sem.Decl_ForeignProc) -> int {
+	idx := 0
+	symbol := decl.name
+	lib_path := decl.lib.lib_name
+
+	for it_id in &foreign_procs {
+		// if it_id == decl {
+		// 	return idx
+		// }
+		idx += 1
+	}
+	// create entry if does not exist
+	prc := br.ForeignProc{lib_path=lib_path, symbol=symbol}
+	prc.convention = dc.CALL_C_X86_WIN32_STD
+	prc.ret_type = decl.ret_type
+	prc.param_types = decl.param_types
+	prc.nparams = len(prc.param_types)
+
+	append(&foreign_procs, prc)
+	return idx
+}
+
+builder_emit_constant_ptr :: proc(using builder: ^BcBuilder, data: rawptr, nbytes: int, temp: ^Temp) -> int {
 	id := len(constants)
 	byte_offset := get_pool_nbytes(builder.constants)
-	append(&constants, ConstantEntry{value=value, byte_offset=byte_offset})
-	nbytes := type_info_of(value.id).size
+	append(&constants, ConstantEntry{data=data, nbytes=nbytes, byte_offset=byte_offset})
+	append_elems(&codes, cast(u8) Opcode.ldc_ptr,
+	  cast(u8) (byte_offset >> 8),
+	  cast(u8) byte_offset, 
+	  temp.idx)
+	return id
+}
+
+builder_emit_constant_raw :: proc(using builder: ^BcBuilder, data: rawptr, nbytes: int, temp: ^Temp) -> int {
+	id := len(constants)
+	byte_offset := get_pool_nbytes(builder.constants)
+	append(&constants, ConstantEntry{data=data, nbytes=nbytes, byte_offset=byte_offset})
 	append_elems(&codes, cast(u8) Opcode.ldc_raw,
 	  cast(u8) (byte_offset >> 8),
 	  cast(u8) byte_offset, 
@@ -64,7 +121,14 @@ builder_emit_constant :: proc(using builder: ^BcBuilder, value: any, temp: ^Temp
 	return id
 }
 
+builder_emit_constant :: proc(using builder: ^BcBuilder, value: any, temp: ^Temp) -> int {
+	nbytes := type_info_of(value.id).size
+	return builder_emit_constant_raw(builder, value.data, nbytes, temp)
+}
+
 builder_emit_expr_to_temp :: proc(builder: ^BcBuilder, rettemp: ^Temp, using semnode: ^SemNode) {
+	fmt.println("building for sem node", semnode)
+
 	#partial switch node in variant {
 	case sem.Sem_Equal:
 		nargs := len(node.args)
@@ -81,6 +145,15 @@ builder_emit_expr_to_temp :: proc(builder: ^BcBuilder, rettemp: ^Temp, using sem
 		v := new(i64)
 		v^ = node.value
 		builder_emit_constant(builder, v^, rettemp)
+	case sem.Sem_String:
+		using builder
+		str := node.value
+		builder_emit_constant_ptr(builder, raw_data(str), len(str), rettemp)
+		rettemp2 := rettemp^
+		rettemp2.idx += 1
+		n := new(int)
+		n^ = len(str)
+		builder_emit_constant(builder, n^, &rettemp2)
 	case sem.Sem_Do:
 		children := node.children
 		for i in 0..<len(children)-1 {
@@ -172,6 +245,36 @@ builder_emit_expr_to_temp :: proc(builder: ^BcBuilder, rettemp: ^Temp, using sem
 			}
 		}
 		panic("no jump target")
+	case sem.Sem_Invoke:
+		using builder
+		// compute args
+		children := node.args
+		subarg_temps := make([]^Temp, len(children))
+		for i in 0..<len(children) {
+			temp := builder_allocate_temp(builder)
+			subarg_temps[i]=temp
+			builder_emit_expr_to_temp(builder, temp, &children[i])
+		}
+		// op
+		switch node.proc_decl.species {
+		case .procedure:
+			append(&codes, cast(u8) Opcode.call)
+			proc_idx := reference_procedure_idx(builder, node.proc_decl.procedure.sem_node)
+			append(&codes, cast(u8) proc_idx)
+			append(&codes, cast(u8) proc_idx>>8)
+		case .foreign_proc:
+			append(&codes, cast(u8) Opcode.call_c)
+			proc_idx := reference_foreign_proc_idx(builder, node.proc_decl.foreign_proc)
+			append(&codes, cast(u8) proc_idx)
+			append(&codes, cast(u8) proc_idx>>8)
+		}
+		// param regs
+		for temp,i in subarg_temps {
+			append(&codes, temp.idx)
+		}
+		// return regs
+		append(&codes, rettemp.idx)
+
 	case:
 		fmt.panicf("unsupported bytecode semnode thing %v", variant)
 	}
@@ -208,27 +311,54 @@ builder_emit_binary_op :: proc(using builder: ^BcBuilder, temp1: ^Temp, temp2: ^
 
 import "core:mem"
 
-build_proc_from_semnode :: proc(semnode: ^SemNode) -> ^ProcInfo {
-	procinfo := new(ProcInfo)
-	procinfo.nparams=0
-	procinfo.nreturns=1
+build_proc_from_semnode :: proc(proc_decl: ^sem.SemProcedure, procid_to_procinfo: ^map[^SemNode]^ProcInfo) ->
+(_procinfo: ^ProcInfo, _proc_refs: []^ProcInfo) {
+	semnode := proc_decl.sem_node
+	nparams := proc_decl.nparams
+	nreturns := proc_decl.nreturns
+
+	// procinfo := new(ProcInfo)
+	procinfo, ok := procid_to_procinfo[semnode]
+	assert(ok)
+	procinfo.nparams=nparams
+	procinfo.nreturns=nreturns
 	constant_pool := &procinfo.constant_pool
 
 	builder := new(BcBuilder)
-	rettemp := builder_allocate_temp(builder)
+	builder.procid_to_procinfo = procid_to_procinfo
+
+	// params
+	builder.arg_temps = make([]^Temp, nparams)
+	for i in 0..<nparams {
+		param_temp := builder_allocate_temp(builder)
+		builder.arg_temps[i]=param_temp
+		local := proc_decl.param_locals[i]
+		append(&builder.local_temp_table, LocalTempTableEntry{temp=param_temp, local=local})
+	}
+
+	rettemp := builder_allocate_temp(builder, nreturns)
 	builder_emit_expr_to_temp(builder, rettemp, semnode)
-	append_elems(&builder.codes, cast(u8) Opcode.ret, rettemp.idx)
+	append_elems(&builder.codes, cast(u8) Opcode.ret)
+	for i in 0..<nreturns {
+		append(&builder.codes, rettemp.idx+i)
+	}
 
 	cpool_size := get_pool_nbytes(builder.constants)
 	constant_pool.raw_data = mem.alloc(size=cpool_size, allocator=context.temp_allocator)
 	for ce in builder.constants {
-		nbytes := type_info_of(ce.value.id).size
+		nbytes := ce.nbytes
 		ptr := mem.ptr_offset(cast(^u8) constant_pool.raw_data, ce.byte_offset)
-		mem.copy(ptr, ce.value.data, nbytes)
+		mem.copy(ptr, ce.data, nbytes)
 	}
 
-	procinfo.code = builder.codes[:]
-	procinfo.memory_nwords = len(builder.temps)
+	procinfo.foreign_procs = builder.foreign_procs[:]
 
-	return procinfo
+	procinfo.code = builder.codes[:]
+	mem_size := 0
+	for temp in builder.temps {
+		mem_size += temp.nwords
+	}
+	procinfo.memory_nwords = mem_size
+
+	return procinfo, builder.procedures[:]
 }

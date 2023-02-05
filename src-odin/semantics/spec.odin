@@ -11,12 +11,14 @@ Spec :: union {
 	Spec_Intersection,
 	Spec_NonVoid,
 	Spec_Number,
+	Spec_String,
 }
 
 void_spec : Spec = Spec_Fixed{typeinfo=Type_Void{}}
 boolean_spec : Spec = Spec_Fixed{typeinfo=Type_Integer{}} // FIXME proper bools
 
 Spec_Number :: struct {}
+Spec_String :: struct {}
 
 Spec_NonVoid :: struct {}
 
@@ -57,6 +59,7 @@ Type_Alias :: struct {
 }
 
 Type_Integer :: struct {
+	signedP: bool,
 	nbits: u8,
 }
 

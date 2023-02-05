@@ -1,2 +1,5 @@
 SkPaint
 SkImageInfo
+SkFont
+SkFontStyle
+SkTextEncoding

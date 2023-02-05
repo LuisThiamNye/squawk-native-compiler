@@ -1,99 +1,68 @@
 package main
 
-import "core:mem"
 import "core:fmt"
-import "core:os"
-import "core:io"
-import br "bytecode_runner"
-import "bytecode_builder"
-import "numbers"
-import "parser"
-import "semantics"
-import "ast"
+import "core:dynlib"
 import "vis"
+import "core:runtime"
 
-println :: fmt.println
+import dc "dyncall"
 
-compile_sample :: proc() {
-	// bytecode_runner.run()
-	// numbers.test_bignums()
-	// codebuf, ok := os.read_entire_file_from_filename("samples/controlflowideas.sq")
-	codebuf, ok := os.read_entire_file_from_filename("samples/test.edn")
-	if !ok {panic("not okay")}
-	parser_ctx := parser.init_parser(codebuf)
-	ast_builder := ast.make_parser_builder()
-	line := 1
-	loop: for {
-		msg := parser.step(parser_ctx)
-		#partial switch msg.tag {
-		case .none:
-			break loop
-		case .eof:
-			break loop
-		case .error:
-			fmt.printf("Parser error at line %v, idx %v:\n", line, msg.start_idx)
-			fmt.println(msg.message)
-			break loop
-		case .newline:
-			line+=1
-		case:
-			ast.builder_accept_parser_msg(ast_builder, parser_ctx, msg)
-		}
-		// fmt.println(line, msg.tag)
-		// fmt.printf("%v %s\n", line, parser_ctx.buf[msg.start_idx:msg.end_idx])
-	}
-
-	nodes := ast.builder_to_astnodes(ast_builder)
-
-	writer := io.to_writer(os.stream_from_handle(os.stdout))
-	for node in nodes {
-		ast.pr_ast(writer, node)
-		fmt.println()
-
-		node_ := node
-		semctx := semantics.make_semctx(&node_, ast_builder.max_depth)
-		// fmt.println("max depth", ast_builder.max_depth)
-		msg := semantics.step_push_node(semctx, &node_, semantics.Spec_NonVoid{})
-		msgloop: for {
-			// msg := semantics.sem_step(semctx)
-			// fmt.println("Msg: ", msg)
-			switch m in msg {
-			case semantics.Msg_Analyse:
-				// fmt.println("DBG ana")
-				// fmt.println(semctx.ast_stack)
-				msg = semantics.sem_step(semctx)
-				// fmt.println(semctx.ast_stack)
-			case semantics.Msg_AnalyseChild:
-				msg = semantics.step_push_node(semctx, m.ast, m.ret_spec)
-				break
-			case semantics.Msg_DoneNode:
-				semantics.sem_complete_node(semctx, m.node)
-				if semctx.ast_stack_endx==0 {break msgloop}
-				msg = semantics.sem_step(semctx)
-			}
-		}
-		semnode := semctx.latest_semnode
-		// fmt.println(semnode)
-		// fmt.println(msg)
-		// fmt.println(semctx)
-
-		procinfo := bytecode_builder.build_proc_from_semnode(&semnode)
-		// println(procinfo)
-		
-		fmt.println("\nBytecode:")
-		br.print_codes(procinfo)
-		fmt.println()
-
-		frame := br.make_frame_from_procinfo(procinfo)
-		// println(frame)
-		br.run_frame(frame)
-		result := mem.ptr_offset(cast(^u64) frame.memory, 0)^
-		println("Result:", result)
-	}
-
-	fmt.println("done")
-}
+import win "core:sys/windows"
 
 main :: proc() {
-	vis.main()
+	win.timeBeginPeriod(1) // better context switching?
+
+	win.AddVectoredExceptionHandler(1, exception_handler)
+
+	// lib, ok := dynlib.load_library("Kernel32.dll", true)
+	// fmt.println("ok:", ok)
+	// symaddr, found := dynlib.symbol_address(lib, "GetProcessHeap")
+	// fmt.println("found:", found)
+	// heapalloc, found2 := dynlib.symbol_address(lib, "HeapAlloc")
+
+	// max_stack_size :: 0x1000
+	// dcvm := dc.NewCallVM(max_stack_size)
+	// defer dc.Free(dcvm)
+	// dc.Mode(dcvm, dc.CALL_C_X86_WIN32_STD)
+
+	// dc.Reset(dcvm)
+	// heap := dc.CallPointer(dcvm, symaddr)
+
+	// dc.Reset(dcvm)
+	// dc.ArgPointer(dcvm, heap)
+	// dc.ArgInt(dcvm, 0)
+	// dc.ArgLongLong(dcvm, 8)
+	// m := cast(^u64) dc.CallPointer(dcvm, heapalloc)
+
+	// m^=99999
+	// fmt.println(m^)
+
+	// vis.main()
+	vis.compile_sample()
+
+	fmt.println("Done.")
+}
+
+exception_handler :: proc "stdcall" (exinfo: ^win.EXCEPTION_POINTERS) -> win.LONG {
+	context = runtime.default_context()
+	using win
+	switch exinfo.ExceptionRecord.ExceptionCode {
+	case EXCEPTION_DATATYPE_MISALIGNMENT,
+		EXCEPTION_ACCESS_VIOLATION,
+		// EXCEPTION_ILLEGAL_INSTRUCTION, // used for panics
+		// EXCEPTION_ARRAY_BOUNDS_EXCEEDED,
+		EXCEPTION_STACK_OVERFLOW:
+
+		fmt.println("\nSYSTEM EXCEPTION")
+		switch exinfo.ExceptionRecord.ExceptionCode {
+		case EXCEPTION_DATATYPE_MISALIGNMENT:
+			fmt.println("datatype misalignment")
+		case EXCEPTION_ACCESS_VIOLATION:
+			fmt.println("access violation")
+		case EXCEPTION_ILLEGAL_INSTRUCTION:
+			fmt.println("illegal instruction")
+		}
+		// return EXCEPTION_EXECUTE_HANDLER
+	}
+	return EXCEPTION_CONTINUE_SEARCH
 }

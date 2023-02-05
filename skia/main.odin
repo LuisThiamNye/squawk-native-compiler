@@ -257,9 +257,14 @@ gen_bindings :: proc() {
 								ca_append(&code, "new(s)")
 								ca_append(&code, class_prefix)
 								ca_append(&code, class_name)
-							}
-							else {
-								ca_append(&code, "s->")
+							} else {
+								if staticP {
+									ca_append(&code, class_prefix)
+									ca_append(&code, class_name)
+									ca_append(&code, "::")
+								} else {
+									ca_append(&code, "s->")
+								}
 								if deinitP {
 									ca_append(&code, cast(u8) '~')
 									ca_append(&code, class_prefix)
@@ -268,7 +273,7 @@ gen_bindings :: proc() {
 									ca_append(&code, mdecl.children[2].token)
 								} else {
 									method_name := name
-									camel_humpP := false
+									camel_humpP := staticP
 									if method_name[len(name)-1]=='?' {
 										ca_append(&code, "is")
 										method_name = method_name[:len(method_name)-1]
@@ -321,6 +326,7 @@ gen_bindings :: proc() {
 }
 
 gen_sizeprog :: proc() {
+	fmt.println("Generating sizes...")
 	filebuf, ok := os.read_entire_file_from_filename("skia/sizes_types.sq")
 	if !ok {panic("not okay")}
 	if len(filebuf)==0 {return}
@@ -381,4 +387,5 @@ gen_sizeprog :: proc() {
 main :: proc() {
 	gen_bindings()
 	gen_sizeprog()
+	fmt.println("Done")
 }

@@ -25,14 +25,29 @@ Graphics :: struct {
 	frame_requested: bool,
 }
 
-AppState :: struct {
-	phase: int,
-	colour: int,
-}
-
 Window :: struct {
 	graphics: Graphics,
 	app: ^AppState,
+	// event_delta: ^EventDelta,
+	latest_hwnd: win.HWND, // may change, so only use from message loop
+}
+
+// EventDelta :: struct {
+// 	events: [dynamic]Event,
+// }
+
+EventTag :: enum {key}
+
+Event :: struct {
+	tag: EventTag,
+	using event: struct #raw_union {
+		keydown: Event_Key,
+		keyup: Event_Key,
+	},
+}
+
+Event_Key :: struct {
+	key: int,
 }
 
 resize_buffer :: proc(using self: ^Graphics, new_width: i32, new_height: i32) {
@@ -77,11 +92,32 @@ get_window_scale :: proc(hwnd: win.HWND) -> f32 {
 
 winmsg_request_frame :: win.WM_USER
 
+request_frame :: proc(window: ^Window) {
+	using win
+	InvalidateRect(window.latest_hwnd, nil, false)
+}
+
 handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 	wparam: win.WPARAM, lparam: win.LPARAM) -> win.LRESULT {
-	using win
 	context = runtime.default_context()
+	using win
 	window := cast(^Window) GetPropW(hwnd, utf8_to_wstring("SQ"))
+	if window == nil { // init window
+		graphics := Graphics{}
+	    rect: RECT
+		GetClientRect(hwnd, &rect)
+	    resize_buffer(&graphics, rect.right-rect.left, rect.bottom-rect.top)
+
+	    window = new(Window)
+	    window^ = {graphics=graphics, app=new(AppState)}
+	    SetPropW(hwnd, utf8_to_wstring("SQ"), auto_cast window)
+
+	    the_only_window = window
+
+	    window.graphics.scale = get_window_scale(hwnd)
+	}
+
+	window.latest_hwnd = hwnd
 	using window
 
 	switch msg {
@@ -135,28 +171,7 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 			}
 
 			cnv := surface_get_canvas(surface)
-
-			canvas_clear(cnv, 0xFFffffff)
-
-			// paint := paint_new()
-			paint := cast(SkPaint) mem.alloc(size_of_SkPaint)
-			paint_init(paint)
-			defer {
-				paint_deinit(paint)
-				mem.free(paint)
-			}
-			// paint_set_colour(paint, 0xFFaa4400)
-			app.colour+=1
-			paint_set_colour(paint, 0xFF000000 | auto_cast app.colour)
-
-			if app.phase>cast(int) width {
-				app.phase=0
-			} else {
-				app.phase += 1
-			}
-			canvas_draw_circle(cnv, auto_cast app.phase, 15, 20, paint)
-			if scale<1.5 {canvas_draw_rect(cnv, {left=5, right=50, top=20, bottom=40}, paint)}
-
+			draw_ui_root(window, cnv)
 			surface_flush(surface)
 
 			// swap buffers
@@ -179,7 +194,8 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 		}
 		// graphics.frame_requested=true
 		// PostMessageW(hwnd, winmsg_request_frame, 0, 0)
-		InvalidateRect(hwnd, nil, false)
+
+		// InvalidateRect(hwnd, nil, false)
 		return 0
 	case WM_MOUSEMOVE:
 		break
@@ -194,10 +210,21 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
     case WM_MBUTTONUP:
     case WM_XBUTTONUP:
     	break
+	case WM_SYSKEYDOWN: fallthrough
 	case WM_KEYDOWN:
+		// event_keydown(window, {key=auto_cast wparam})
 		break
 	case WM_KEYUP:
 		break
+	case WM_CHAR:
+		mask_nrepeats :: 0b00000000000000001111111111111111
+		mask_scancode :: 0b00000000011111110000000000000000
+		mask_extkey ::   0b00000000100000000000000000000000
+		mask_keystate :: 0b10000000000000000000000000000000
+		charcode := cast(int) wparam
+		nrepeats := mask_nrepeats & lparam
+		event_charinput(window, charcode)
+		return 0
 	case WM_SETFOCUS:
 		break
 	case WM_KILLFOCUS:
@@ -211,6 +238,8 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 
 	return DefWindowProcW(hwnd, msg, wparam, lparam)
 }
+
+the_only_window : ^Window
 
 main :: proc() {
 	using win
@@ -239,31 +268,24 @@ main :: proc() {
 	w : i32 = 500
 	h : i32 = 400
     hwnd :=
-    	CreateWindowExW(0,
-                        class_name,
-                        window_name,
-                        WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-                        x, y, w, h,
-                        nil, nil,
-                        auto_cast GetModuleHandleW(nil),
-                        nil)
+    	CreateWindowExW(
+    		0,
+            class_name,
+            window_name,
+            WS_OVERLAPPEDWINDOW | WS_CAPTION | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+            x, y, w, h,
+            nil, nil,
+            auto_cast GetModuleHandleW(nil),
+            nil)
 
     if hwnd == nil {
     	panic("failed to create hwnd")
     }
 
-    graphics := Graphics{}
-    rect: RECT
-	GetClientRect(hwnd, &rect)
-    resize_buffer(&graphics, rect.right-rect.left, rect.bottom-rect.top)
-
-    window := new(Window)
-    window^ = {graphics=graphics, app=new(AppState)}
-    SetPropW(hwnd, utf8_to_wstring("SQ"), auto_cast window)
-
-    window.graphics.scale = get_window_scale(hwnd)
-
     ShowWindow(hwnd, SW_RESTORE)
+
+    // DEV
+    compile_sample()
 
     msg: MSG
     for {
@@ -279,4 +301,181 @@ main :: proc() {
     }
 
 	println("done.")
+}
+
+Cursor :: struct {
+	path: []int,
+}
+
+Region :: struct {
+	to: Cursor,
+	from: Cursor,
+}
+
+region_is_point :: proc(using region: Region) -> bool {
+	if (len(to.path) != len(from.path)) {return false}
+	for i in 0..<len(to.path) {
+		if to.path[i] != from.path[i] {return false}
+	}
+	return true
+}
+
+CodeEditor :: struct {
+	regions: [dynamic]Region,
+	roots: [dynamic]CodeNode,
+}
+
+CodeNode_Tag :: enum {
+	coll,
+	token,
+}
+
+CodeNode :: struct {
+	tag: CodeNode_Tag,
+	using node: struct #raw_union {
+		coll: CodeNode_Coll,
+	 	token: CodeNode_Token},
+}
+
+CodeCollType :: enum {round, curly, square}
+
+CodeNode_Coll :: struct {
+	coll_type: CodeCollType,
+	children: [dynamic]CodeNode,
+}
+
+CodeNode_Token :: struct {
+	text: string,
+}
+
+Point :: struct {
+	x: int,
+	y: int,
+}
+
+AppState :: struct {
+	initialised: bool,
+	code_editor: ^CodeEditor,
+	inspector: InspectorState,
+}	
+
+sk_rect :: proc(l: $L, t: $T, r: $R, b: $B) -> sk.SkRect {
+	return {left=cast(f32) l, top=cast(f32) t,
+		right=cast(f32) r, bottom=cast(f32) b}
+}
+
+make_paint :: proc() -> sk.SkPaint {
+	using sk
+	paint := cast(SkPaint) mem.alloc(size=size_of_SkPaint, allocator=context.temp_allocator)
+	paint_init(paint)
+	return paint
+}
+
+draw_ui_root :: proc(window: ^Window, cnv: sk.SkCanvas) {
+	using sk, window, graphics
+
+	if !app.initialised {
+		app.initialised = true
+		app.code_editor = new(CodeEditor)
+		append(&app.code_editor.regions, Region{})
+	}
+
+	canvas_clear(cnv, 0xFFffffff)
+
+	draw_inspector(window, cnv, &window.app.inspector)
+
+	mem.free_all(context.temp_allocator)
+}
+
+get_default_font :: proc(window: ^Window, font_size: $S) -> sk.SkFont {
+	using window, sk, graphics
+	font_size : f32 = cast(f32) font_size
+	font_style := fontstyle_init(auto_cast mem.alloc(size_of_SkFontStyle),
+		SkFontStyle_Weight.normal, SkFontStyle_Width.normal, SkFontStyle_Slant.upright)
+	typeface := typeface_make_from_name(nil, font_style^)
+	font := font_init(auto_cast mem.alloc(size=size_of_SkFont, allocator=context.temp_allocator), typeface, font_size)
+	return font
+}
+
+make_textblob_from_text :: proc(text: string, font: sk.SkFont) -> sk.SkTextBlob {
+	using sk
+	nglyphs := font_text_to_glyphs(font, raw_data(text), len(text), SkTextEncoding.UTF8, nil, 0)
+	glyphs := cast([^]SkGlyphID) mem.alloc(size=cast(int) nglyphs*size_of(SkGlyphID),
+		allocator=context.temp_allocator)
+	font_text_to_glyphs(font, raw_data(text), len(text), SkTextEncoding.UTF8, glyphs, nglyphs)
+	blob := textblob_make_from_text(glyphs, auto_cast nglyphs*size_of(SkGlyphID),
+		font, SkTextEncoding.GlyphID)
+	return blob
+}
+
+draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
+	using window, sk, graphics
+
+	active_colour : u32 = 0xff007ACC
+	paint := make_paint()
+	paint_set_colour(paint, 0xFF000000)
+	active_paint := make_paint()
+	paint_set_colour(active_paint, 0xFF000000 | auto_cast active_colour)
+
+	line_height := 15
+	origin := Point{x=10,y=10}
+
+	{
+		using app.code_editor
+		for root in roots {
+			#partial switch root.tag {
+			case .token:
+				x := 50
+				y := line_height
+				token := root.token
+				text := token.text
+				font_size : f32 = 20
+				font_style := fontstyle_init(auto_cast mem.alloc(size_of_SkFontStyle),
+					SkFontStyle_Weight.normal, SkFontStyle_Width.normal, SkFontStyle_Slant.upright)
+				typeface := typeface_make_from_name(nil, font_style^)
+				font := font_init(auto_cast mem.alloc(size=size_of_SkFont, allocator=context.temp_allocator), typeface, font_size)
+
+				blob := make_textblob_from_text(text, font)
+
+				canvas_draw_text_blob(cnv, blob, auto_cast x, auto_cast y, paint)
+			}
+		}
+	}
+
+	{
+		cursor_width := 2
+		x := origin.x
+		y := origin.y
+		dl := cursor_width/2
+		dr := cursor_width-dl
+		csave := canvas_save(cnv)
+		canvas_scale(cnv, scale, scale)
+		canvas_draw_rect(cnv, sk_rect(l=x-dl, r=x+dr, t=y, b=y+line_height), active_paint)
+		canvas_restore_to_count(cnv, csave)
+	}
+}
+
+event_keydown :: proc(window: ^Window, using evt: Event_Key) {
+	fmt.println(evt)
+}
+
+event_charinput :: proc(window: ^Window, ch: int) {
+	code_editor := window.app.code_editor
+	using code_editor
+	for region in regions {
+		if !region_is_point(region) {break}
+		path := region.to.path
+
+		if len(roots)==0 {
+			ary := make([]u8,1)
+			ary[0]=auto_cast ch
+			str := string(ary)
+			append(&roots, CodeNode{tag=.token, node={token={text=str}}})
+
+			// p := make()
+			// p[0]=
+			// region.to.path := 
+		}
+	}
+	request_frame(window)
 }
