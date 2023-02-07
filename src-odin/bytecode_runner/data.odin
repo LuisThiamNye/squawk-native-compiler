@@ -110,6 +110,23 @@ ForeignProc_C_Type :: enum {
 	void, bool, char, short, int, long, longlong, float, double, pointer, aggregate,
 }
 
+foreign_proc_c_type_byte_size :: proc(type: ForeignProc_C_Type) -> int {
+	switch type {
+	case .void: return 0
+	case .bool: return 1
+	case .char: return 2
+	case .short: return 2
+	case .int: return 4
+	case .long: return 4
+	case .longlong: return 8
+	case .float: return 4
+	case .double: return 8
+	case .pointer: return 8
+	case .aggregate: panic("invalid")
+	case: panic("invalid")
+	}
+}
+
 ForeignProc :: struct {
 	proc_ptr: rawptr,
 	convention: u8,

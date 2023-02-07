@@ -97,7 +97,8 @@ compile_sample :: proc() {
 	for procinfo, i in all_procinfos {
 		fmt.println()
 		fmt.println(cunit.procedures[i].name)
-		fmt.printf("mem words: %v; params: %v; returns: %v\n", procinfo.memory_nwords, procinfo.nparams, procinfo.nreturns)
+		fmt.printf("mem words: %v; params: %v; returns: %v; max code idx: %v\n",
+			procinfo.memory_nwords, procinfo.nparams, procinfo.nreturns, len(procinfo.code)-1)
 		fmt.println("Bytecode:")
 		br.print_codes(procinfo)
 		fmt.println()
@@ -113,9 +114,15 @@ compile_sample :: proc() {
 			br.run_frame(frame)
 			// fmt.println((cast([^]u64) frame.return_memory)[:procinfo.memory_nwords])
 
-			// result := mem.ptr_offset(cast(^string) frame.return_memory, 0)^
-			result := mem.ptr_offset(cast(^rawptr) frame.return_memory, 0)^
-			println("Result:", result)
+			ret0 := mem.ptr_offset(cast(^rawptr) frame.return_memory, 0)
+			ti1: TypeInfo = Type_Integer{nbits=64, signedP=true}
+			ti2: TypeInfo = Type_Pointer{value_type=auto_cast &Type_Void{}}
+			ti_mem_1 := Type_Struct_Member{name="count", type=&ti1, byte_offset=0}
+			ti_mem_2 := Type_Struct_Member{name="data", type=&ti2, byte_offset=8}
+			typeinfo : TypeInfo = Type_Struct{name="String", members={ti_mem_1, ti_mem_2}}
+			wrapper := Rt_Any{data=ret0, type=&typeinfo}
+			println("Result:")
+			print_rt_any(wrapper)
 		}
 	}
 	

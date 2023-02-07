@@ -712,6 +712,8 @@ step_defn :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 			return Spec_Fixed{typeinfo=Type_Integer{signedP=true, nbits=64}}
 		case "rawptr":
 			return Spec_Fixed{typeinfo=Type_Integer{signedP=true, nbits=64}}
+		case "String":
+			return Spec_String{}
 		case:
 			panic("unsupported string to spec")
 		}

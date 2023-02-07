@@ -1,0 +1,69 @@
+
+(defstruct Counted-Array
+  (count int)
+  (data rawptr))
+
+(defstruct String
+  (counted-array Counted-Array :as :use))
+
+
+(defstruct Any
+  (type *Type-Info)
+  (data rawptr))
+
+(defenum Type-Info-Tag
+  [void pointer
+   bool integer float
+   procedure
+   static-array struct enum
+   any])
+
+(defstruct Type-Info
+  (tag Type-Info-Tag))
+
+(defstruct Type-Info-Integer
+  (type-info Type-Info :as :use)
+  (nbits u32)
+  (signed? bool))
+
+(defstruct Type-Info-Float
+  (type-info Type-Info :as :use)
+  (nbits u32))
+
+(defstruct Type-Info-Pointer
+  (type-info Type-Info :as :use)
+  (value-type *Type-Info))
+
+(defstruct Type-Info-Procedure
+  (type-info Type-Info :as :use)
+  (param-types [*Type-Info])
+  (return-types [*Type-Info]))
+
+(defstruct Type-Info-Struct
+  (type-info Type-Info :as :use)
+  (name String)
+  (members [Type-Info-Struct-Member]))
+
+(defstruct Type-Info-Struct-Member
+  (name String)
+  (type *Type-Info)
+  (byte-offset int))
+
+(defstruct Type-Info-Static-Array
+  (type-info Type-Info :as :use)
+  (count int)
+  (item-type *Type-Info))
+
+(defstruct Type-Info-Enum
+  (type-info Type-Info :as :use)
+  (backing-type *Type-Info))
+
+
+(defstruct Allocator
+  )
+
+(defstruct Dynamic-Array
+  (count int)
+  (data rawptr)
+  (capacity int)
+  (allocator Allocator))

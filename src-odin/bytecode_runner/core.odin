@@ -96,12 +96,12 @@ print_codes :: proc(using procinfo: ^ProcInfo) {
 
 			for i in 0..<subprocinfo.nparams { // load args into memory array
 				pc+=1
-				fmt.print(code[pc], "")
+				fmt.printf("r%v ", code[pc])
 			}
 			fmt.print("->")
 			for i in 0..<subprocinfo.nreturns { // give subframe reg to set returns in
 				pc+=1
-				fmt.print("", code[pc])
+				fmt.printf(" r%v", code[pc])
 			}
 
 		case .call_c: // foreign proc idx (2), arg reg... ret reg
@@ -109,27 +109,29 @@ print_codes :: proc(using procinfo: ^ProcInfo) {
 			proc_idx := cast(int) code[pc-1] + (cast(int) code[pc]<<8)
 			subprocinfo := foreign_procs[proc_idx]
 
-			for i in 0..<subprocinfo.nparams { // load args into memory array
+			for i in 0..<subprocinfo.nparams {
 				pc+=1
-				fmt.print(code[pc], "")
+				fmt.printf("r%v ", code[pc])
 			}
+			pc+=1
 			fmt.print("->", code[pc])
 			fmt.print(" ;", subprocinfo.symbol)
 			fmt.print("(")
-			for t in subprocinfo.param_types {
+			for t, i in subprocinfo.param_types {
+				if i!=0 {
+					fmt.print(" ")
+				}
 				fmt.print(t)
 			}
 			fmt.print(")")
 			if subprocinfo.ret_type!=.void {
-				fmt.print(" ->", subprocinfo.ret_type)
+				fmt.printf(" -> %v", subprocinfo.ret_type)
 			}
-
-			pc+=1
 
 		case .ret: // ret registers...
 			for i in 0..<nreturns {
 				pc+=1
-				fmt.print(code[pc], "")
+				fmt.printf("r%v ", code[pc])
 			}
 
 		case .goto: // new pc(3)

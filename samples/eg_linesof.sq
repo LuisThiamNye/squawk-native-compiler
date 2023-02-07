@@ -10,7 +10,7 @@
   (GetProcessHeap [] -> rawptr)
   (HeapAlloc [(heap rawptr) (flags u32) (nbytes uint)] -> rawptr))
 
-(defn allocate [(nbytes uint)] -> [rawptr]
+(defn allocate [(nbytes uint)] -> [(memory rawptr)]
   (HeapAlloc (GetProcessHeap) 0 nbytes))
 
 ; (defn cstring [(s String)] -> [rawptr]
@@ -19,8 +19,11 @@
 ;     (set (at cs (:count s)) 0)
 ;     cs))
 
-(defn main [] -> [String]
-  (allocate 8))
+(defn cstring [(s String)] -> [_]
+  (:count s))
+
+(defn main [] -> [_]
+  (cstring "abc"))
 
 ; (defn main []
 ;   (do
