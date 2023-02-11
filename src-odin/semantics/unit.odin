@@ -31,20 +31,27 @@ Decl_ForeignProc :: struct {
 	ret_type: br.ForeignProc_C_Type,
 }
 
+Decl_Datatype :: struct {
+	name: string,
+	typeinfo: TypeInfo,
+}
+
 CompilationUnit :: struct {
 	top_level_nodes: [dynamic]^CompilationNode,
 	symbol_map: map[string]SymbolDeclaration,
 	procedures: [dynamic]SemProcedure,
 	foreign_procs: [dynamic]Decl_ForeignProc,
 	foreign_libs: [dynamic]Decl_ForeignLib,
+	datatypes: [dynamic]Decl_Datatype,
 }
 
 SymbolDeclaration :: struct {
-	tag: enum {procedure, foreign_lib, foreign_proc},
+	tag: enum {procedure, foreign_lib, foreign_proc, datatype},
 	using val: struct #raw_union {
 		procedure: ^SemProcedure,
 		foreign_lib: ^Decl_ForeignLib,
 		foreign_proc: ^Decl_ForeignProc,
+		datatype: ^Decl_Datatype,
 	},
 }
 

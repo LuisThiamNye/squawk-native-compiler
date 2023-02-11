@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:dynlib"
 import "vis"
 import "core:runtime"
+import "core:os"
 
 import dc "dyncall"
 
@@ -53,7 +54,7 @@ exception_handler :: proc "stdcall" (exinfo: ^win.EXCEPTION_POINTERS) -> win.LON
 		// EXCEPTION_ARRAY_BOUNDS_EXCEEDED,
 		EXCEPTION_STACK_OVERFLOW:
 
-		fmt.println("\nSYSTEM EXCEPTION")
+		fmt.println("\n\n** SYSTEM EXCEPTION **")
 		switch exinfo.ExceptionRecord.ExceptionCode {
 		case EXCEPTION_DATATYPE_MISALIGNMENT:
 			fmt.println("datatype misalignment")
@@ -64,5 +65,6 @@ exception_handler :: proc "stdcall" (exinfo: ^win.EXCEPTION_POINTERS) -> win.LON
 		}
 		// return EXCEPTION_EXECUTE_HANDLER
 	}
+	
 	return EXCEPTION_CONTINUE_SEARCH
 }

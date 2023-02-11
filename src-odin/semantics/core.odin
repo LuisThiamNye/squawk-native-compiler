@@ -4,38 +4,33 @@ import "../ast"
 import "core:fmt"
 import "core:mem"
 import "../numbers"
+import "core:strings"
 
 AstNode :: ast.AstNode
 
 SpecialFormTag :: enum {
 	doblock,
 	assign,
+	access_path,
 	let,
 	ifbranch,
 	jumppad,
 	equal,
+	add,
 	goto,
 	defn,
+	defstruct,
 	foreign_lib,
 	foreign_members,
-}
+	use,
+	caster,
 
-Local :: struct {
-	spec: ^Spec,
-	decl_tag: enum {let, param,},
-}
-
-ScopeBinding :: struct {
-	symbol: string,
-	local: ^Local,
-}
-
-ScopeStackFrame :: struct {
-	bindings: []ScopeBinding,
+	mem_copy,
 }
 
 NodeAnalyser :: union {
 	Ana_Equal,
+	Ana_Binop,
 	Ana_Number,
 	Ana_String,
 	Ana_Do,
@@ -46,10 +41,61 @@ NodeAnalyser :: union {
 	Ana_Jumppad,
 	Ana_Goto,
 	Ana_Defn,
+	Ana_Defstruct,
 	Ana_Invoke,
+	Ana_Intrinsic,
 	Ana_UnresolvedList,
 	Ana_ForeignLib,
 	Ana_ForeignMembers,
+	Ana_Use,
+	Ana_Cast,
+	Ana_AccessPath,
+}
+
+make_default_sf_map :: proc() -> map[string]SpecialFormTag {
+	m := make(map[string]SpecialFormTag)
+	m["="] = .equal
+	m["+"] = .add
+	m["do"] = .doblock
+	m["let"] = .let
+	m["if"] = .ifbranch
+	m["set"] = .assign
+	m["jumppad"] = .jumppad
+	m["goto"] = .goto
+	m["defn"] = .defn
+	m["defstruct"] = .defstruct
+	m["def-foreign-lib"] = .foreign_lib
+	m["declare-foreigns"] = .foreign_members
+	m["use"] = .use
+	m["cast"] = .caster
+	m[":"] = .access_path
+
+	m["memcopy"] = .mem_copy
+	return m
+}
+
+SemNode_Variant :: union {
+	Sem_Equal, Sem_Number, Sem_String, Sem_Do, Sem_Let,
+	Sem_LocalUse, Sem_If, Sem_Assign, Sem_Jumppad, Sem_Goto,
+	Sem_Defn, Sem_Invoke, Sem_ForeignLib, Sem_ForeignMembers,
+	Sem_Defstruct, Sem_Use, Sem_Cast, Sem_Binop, Sem_AccessPath,
+	Sem_Intrinsic,
+}
+
+Local :: struct {
+	spec: ^Spec,
+	decl_tag: enum {let, param,},
+}
+
+ScopeBinding :: struct {
+	symbol: string,
+	tag: enum {local, alias},
+	local: ^Local,
+	alias: struct {binding: ^ScopeBinding, member_name: string},
+}
+
+ScopeStackFrame :: struct {
+	bindings: []ScopeBinding,
 }
 
 AstStackFrame :: struct {
@@ -72,21 +118,6 @@ SemCtx :: struct {
 	compilation_unit: ^CompilationUnit,
 	compilation_node: ^CompilationNode,
 	unresolved_symbol: string,
-}
-
-make_default_sf_map :: proc() -> map[string]SpecialFormTag {
-	m := make(map[string]SpecialFormTag)
-	m["="] = .equal
-	m["do"] = .doblock
-	m["let"] = .let
-	m["if"] = .ifbranch
-	m["set"] = .assign
-	m["jumppad"] = .jumppad
-	m["goto"] = .goto
-	m["defn"] = .defn
-	m["def-foreign-lib"] = .foreign_lib
-	m["declare-foreigns"] = .foreign_members
-	return m
 }
 
 // push_special_form :: proc(sem: ^SemCtx, name: string, )
@@ -112,6 +143,8 @@ initial_ana_for_ast_node :: proc(ctx: ^SemCtx, ast: ^AstNode) ->
 				switch sf {
 				case .equal:
 					ret_ana = Ana_Equal{cursor=1}
+				case .add:
+					ret_ana = Ana_Binop{cursor=1, op=.add}
 				case .doblock:
 					ret_ana =  Ana_Do{cursor=1}
 				case .let:
@@ -126,16 +159,26 @@ initial_ana_for_ast_node :: proc(ctx: ^SemCtx, ast: ^AstNode) ->
 					ret_ana =  Ana_Goto{cursor=1}
 				case .defn:
 					ret_ana =  Ana_Defn{cursor=1}
+				case .defstruct:
+					ret_ana =  Ana_Defstruct{cursor=1}
 				case .foreign_lib:
 					ret_ana =  Ana_ForeignLib{cursor=1}
 				case .foreign_members:
 					ret_ana =  Ana_ForeignMembers{cursor=1}
+				case .use:
+					ret_ana =  Ana_Use{cursor=1}
+				case .caster:
+					ret_ana =  Ana_Cast{cursor=1}
+				case .access_path:
+					ret_ana =  Ana_AccessPath{cursor=1}
+
+				case .mem_copy:
+					ret_ana =  Ana_Intrinsic{cursor=1, op=.mem_copy}
 				case:
 					panic("unreachable")
 				}
 				return
 			} else {
-				// fmt.panicf("unknown symbol %v", child1.token)
 				decl, found := ctx.compilation_unit.symbol_map[child1.token]
 				if !found {
 					return Ana_UnresolvedList{}, Msg_ResolveSymbol{name=child1.token, ctx=.invoke}
@@ -157,18 +200,33 @@ initial_ana_for_ast_node :: proc(ctx: ^SemCtx, ast: ^AstNode) ->
 		}
 	case .symbol:
 		token := ast.token
+
+		slash_idx := strings.index_byte(token, '/')
+		members : []string
+		target_sym : string
+		if slash_idx>=0 {
+			if slash_idx==len(token)-1 {
+				panic("delimiter can't be at the end")
+			}
+			target_sym = token[0:slash_idx]
+			members = make([]string, 1)
+			members[0] = token[slash_idx+1:]
+		} else {
+			target_sym = token
+		}
+
 		ss_loop: for i:=len(ctx.scope_stack)-1; i>=0; i-=1 {
 			scope_frame := ctx.scope_stack[i]
 			bindings := scope_frame.bindings
 			for j:=len(bindings)-1; j>=0; j-=1 {
 				sym := bindings[j].symbol
-				if sym == token {
-					ret_ana = Ana_LocalUse{local=bindings[j].local}
+				if sym == target_sym {
+					ret_ana = Ana_LocalUse{local=bindings[j].local, members=members}
 					return
 				}
 			}
 		}
-		fmt.panicf("unresolved symbol : %v\n", ast.token)
+		fmt.panicf("unresolved symbol : %v\n", token)
 	case .number:
 		ret_ana = Ana_Number{ast=ast}
 		return
@@ -220,12 +278,6 @@ Msg_ResolveSymbol :: struct {
 	ctx: enum {floating=0, invoke},
 }
 
-SemNode_Variant :: union {
-	Sem_Equal, Sem_Number, Sem_String, Sem_Do, Sem_Let,
-	Sem_LocalUse, Sem_If, Sem_Assign, Sem_Jumppad, Sem_Goto,
-	Sem_Defn, Sem_Invoke, Sem_ForeignLib, Sem_ForeignMembers,
-}
-
 SemNode :: struct {
 	spec: ^Spec,
 	variant: SemNode_Variant,
@@ -239,6 +291,8 @@ sem_step :: proc(using sem: ^SemCtx) -> Message {
 	switch _ana in analyser {
 	case Ana_Equal:
 		return step_equal(sem, frame)
+	case Ana_Binop:
+		return step_binop(sem, frame)
 	case Ana_Number:
 		return step_number(sem, frame)
 	case Ana_String:
@@ -259,6 +313,8 @@ sem_step :: proc(using sem: ^SemCtx) -> Message {
 		return step_goto(sem, frame)
 	case Ana_Defn:
 		return step_defn(sem, frame)
+	case Ana_Defstruct:
+		return step_defstruct(sem, frame)
 	case Ana_Invoke:
 		return step_invoke(sem, frame)
 	case Ana_UnresolvedList:
@@ -267,10 +323,18 @@ sem_step :: proc(using sem: ^SemCtx) -> Message {
 		return step_foreign_lib(sem, frame)
 	case Ana_ForeignMembers:
 		return step_foreign_members(sem, frame)
+	case Ana_Use:
+		return step_use(sem, frame)
+	case Ana_Cast:
+		return step_cast(sem, frame)
+	case Ana_AccessPath:
+		return step_access_path(sem, frame)
+	case Ana_Intrinsic:
+		return step_intrinsic(sem, frame)
 	}
 	fmt.panicf("invalid analyser at stack idx %v for frame %v",
 	ast_stack_cursor, frame)
-} 
+}
 
 
 Sem_Equal :: struct {
@@ -317,6 +381,52 @@ step_equal :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 	return Msg_AnalyseChild{ast=&ast.children[idx], ret_spec=Spec_Trait{id=trait_equal_id}}
 }
 
+Binop :: enum {add, sub, mul, div, equal}
+
+Sem_Binop :: struct {
+	op: Binop,
+	args: []SemNode,
+}
+
+Ana_Binop :: struct {
+	cursor: int,
+	op: Binop,
+	result: ^Sem_Binop,
+}
+
+step_binop :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
+	ana := &analyser.(Ana_Binop)
+	if ana.cursor == 1 {
+		ana.result = new(Sem_Binop)
+		ana.result.args = make([]SemNode, len(ast.children)-1)
+		ana.result.op = ana.op
+	} else {
+		ana.result.args[ana.cursor-2]=sem.latest_semnode
+	}
+	if ana.cursor >= len(ast.children) { // end
+		if ana.cursor < 3 {
+			panic("insufficient input")
+		} else {
+			specs := make([]^Spec, len(ana.result.args))
+			for semnode, i in ana.result.args {
+				specs[i] = semnode.spec
+			}
+			spec, ok := spec_coerce_to_equal_types(specs)
+			if !ok {
+				fmt.println(specs)
+				panic("could not coerce specs")
+			}
+			variant := ana.result^
+			return Msg_DoneNode{node={spec=spec, variant=variant}}
+		}
+	}
+
+	idx := ana.cursor
+	ana.cursor = idx+1
+	trait_invalid :: 0
+	return Msg_AnalyseChild{ast=&ast.children[idx], ret_spec=Spec_Trait{id=trait_invalid}}
+}
+
 
 Sem_Do :: struct {
 	children: []SemNode,
@@ -356,13 +466,16 @@ step_doblock :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 
 Sem_Let :: struct {
 	local: ^Local,
+	initialiser_tag: enum {set_value, type_default},
 	val_node: ^SemNode,
+	typeinfo: ^TypeInfo, // only valid when type_default
 }
 
 Ana_Let :: struct {
 	cursor: int,
 	local_name: string,
 	result: ^Sem_Let,
+	type_creationP: bool,
 }
 
 step_let :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
@@ -388,17 +501,43 @@ step_let :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 		ana.local_name = astnode.token
 		return Msg_Analyse{}
 	} else if idx == 2 { // valexpr
+
+		// for when initialising a default type
+		valexpr := ast.children[idx]
+		if valexpr.tag == .symbol && valexpr.token[len(valexpr.token)-1]=='.' {
+			typestr := valexpr.token[0:len(valexpr.token)-1]
+
+			ana.result.initialiser_tag=.type_default
+
+			// resolve type
+			for dt in &sem.compilation_unit.datatypes {
+				if dt.name == typestr {
+					typeinfo := &dt.typeinfo
+					ana.result.typeinfo = typeinfo
+					return Msg_Analyse{}
+				}
+			}
+			panic("could not resolve type for let initialiser")
+		}
+
 		return Msg_AnalyseChild{ast=&ast.children[idx], ret_spec=Spec_NonVoid{}}
 	} else {
-		ana.result.val_node^ = sem.latest_semnode
-		spec := ana.result.val_node.spec
+		spec : ^Spec
+		switch ana.result.initialiser_tag {
+		case .set_value:
+			ana.result.val_node^ = sem.latest_semnode
+			spec = ana.result.val_node.spec
+		case .type_default:
+			spec = new(Spec)
+			spec^ = Spec_Fixed{typeinfo=ana.result.typeinfo^}
+		}
 
 		local := new(Local)
 		local.spec = spec
 		ana.result.local = local
 
 		bindings := make([]ScopeBinding, 1)
-		bindings[0] = ScopeBinding{symbol=ana.local_name, local=local}
+		bindings[0] = ScopeBinding{symbol=ana.local_name, local=local, tag=.local}
 		scope_frame := ScopeStackFrame{bindings=bindings}
 		append(&sem.scope_stack, scope_frame)
 
@@ -408,8 +547,10 @@ step_let :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 
 
 Sem_Assign :: struct {
-	local: ^Local,
+	// local: ^Local,
 	val_node: ^SemNode,
+	// binding: ^ScopeBinding,
+	target_node: ^SemNode,
 }
 
 Ana_Assign :: struct {
@@ -422,6 +563,7 @@ step_assign :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 	if ana.cursor == 1 { // init
 		ana.result = new(Sem_Assign)
 		ana.result.val_node = new(SemNode)
+		ana.result.target_node = new(SemNode)
 		if len(ast.children) > 3 {
 			panic("too many children to 'set'")
 		}
@@ -433,24 +575,33 @@ step_assign :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 	ana.cursor = idx+1
 
 	if idx == 1 { // sym
-		astnode := ast.children[idx]
-		if astnode.tag != .symbol {
-			panic("'set' must have symbol")
-		}
-		token := astnode.token
-		ss_loop: for i:=len(sem.scope_stack)-1; i>=0; i-=1 {
-			scope_frame := sem.scope_stack[i]
-			bindings := scope_frame.bindings
-			for j:=len(bindings)-1; j>=0; j-=1 {
-				sym := bindings[j].symbol
-				if sym == token {
-					ana.result.local = bindings[j].local
-					return Msg_Analyse{}
-				}
-			}
-		}
-		panic("could not resolve local to 'set'")		
+		return Msg_AnalyseChild{ast=&ast.children[idx], ret_spec=Spec_NonVoid{}}
+		// astnode := ast.children[idx]
+		// if astnode.tag != .symbol {
+		// 	panic("'set' target must have symbol")
+		// }
+		// token := astnode.token
+		// ss_loop: for i:=len(sem.scope_stack)-1; i>=0; i-=1 {
+		// 	scope_frame := sem.scope_stack[i]
+		// 	bindings := scope_frame.bindings
+		// 	for j:=len(bindings)-1; j>=0; j-=1 {
+		// 		sym := bindings[j].symbol
+		// 		if sym == token {
+		// 			// switch bindings[j].tag {
+		// 			// case .local:
+		// 			// 	ana.result.local = bindings[j].local
+		// 			// case .alias:
+		// 			// }
+		// 			ana.result.binding = &bindings[j]
+		// 			return Msg_Analyse{}
+		// 		}
+		// 	}
+		// }
+		// fmt.println()
+		// fmt.println(sem.scope_stack)
+		// fmt.panicf("could not resolve local to 'set': %v\n", token)
 	} else if idx == 2 { // valexpr
+		ana.result.target_node^ = sem.latest_semnode
 		return Msg_AnalyseChild{ast=&ast.children[idx], ret_spec=Spec_NonVoid{}}
 	} else {
 		ana.result.val_node^ = sem.latest_semnode
@@ -463,10 +614,12 @@ step_assign :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 
 Sem_LocalUse :: struct {
 	local: ^Local,
+	members: []string,
 }
 
 Ana_LocalUse :: struct {
 	local: ^Local,
+	members: []string,
 }
 
 step_localuse :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
@@ -474,7 +627,75 @@ step_localuse :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 	local := ana.local
 
 	sem := Sem_LocalUse{local=local}
-	return Msg_DoneNode{node={spec=local.spec, variant=sem}}
+	sem.members=ana.members
+	spec : ^Spec
+	if len(ana.members)==0 {
+		spec = local.spec
+	} else {
+		member_name := ana.members[0]
+		spec = spec_get_member(local.spec, member_name)
+	}
+	return Msg_DoneNode{node={spec=spec, variant=sem}}
+}
+
+
+Sem_AccessPath :: struct {
+	// local: ^Local,
+	binding: ^ScopeBinding,
+	member_nodes: []SemNode,
+}
+
+Ana_AccessPath :: struct {
+	cursor: int,
+	result: ^Sem_AccessPath,
+}
+
+step_access_path :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
+	ana := &analyser.(Ana_AccessPath)
+	if ana.cursor == 1 { // init
+		ana.result = new(Sem_AccessPath)
+		ana.result.member_nodes = make([]SemNode, len(ast.children)-2)
+		if len(ast.children) < 3 {
+			panic("too few children to access_path")
+		}
+	}
+	idx := ana.cursor
+	ana.cursor = idx+1
+
+	if idx == 1 { // sym
+		astnode := ast.children[idx]
+		if astnode.tag != .symbol {
+			panic("target must have symbol")
+		}
+		token := astnode.token
+		ss_loop: for i:=len(sem.scope_stack)-1; i>=0; i-=1 {
+			scope_frame := sem.scope_stack[i]
+			bindings := scope_frame.bindings
+			for j:=len(bindings)-1; j>=0; j-=1 {
+				sym := bindings[j].symbol
+				if sym == token {
+					// switch bindings[j].tag {
+					// case .local:
+					// 	ana.result.local = bindings[j].local
+					// case .alias:
+					// }
+					ana.result.binding = &bindings[j]
+					return Msg_Analyse{}
+				}
+			}
+		}
+		fmt.println()
+		fmt.println(sem.scope_stack)
+		fmt.panicf("could not resolve target's local: %v\n", token)
+	} else if idx < len(ast.children) { // members
+		if idx >= 2 {
+			ana.result.member_nodes[idx-2] = sem.latest_semnode
+		}
+		return Msg_AnalyseChild{ast=&ast.children[idx], ret_spec=Spec_NonVoid{}}
+	} else {
+		spec := &void_spec // FIXME
+		return Msg_DoneNode{node={spec=spec, variant=ana.result^}}
+	}
 }
 
 
@@ -704,21 +925,6 @@ step_defn :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 	idx := ana.cursor
 	ana.cursor = idx+1
 
-	str_to_spec :: proc(s: string) -> Spec {
-		switch s {
-		case "uint":
-			return Spec_Fixed{typeinfo=Type_Integer{signedP=false, nbits=64}}
-		case "int":
-			return Spec_Fixed{typeinfo=Type_Integer{signedP=true, nbits=64}}
-		case "rawptr":
-			return Spec_Fixed{typeinfo=Type_Integer{signedP=true, nbits=64}}
-		case "String":
-			return Spec_String{}
-		case:
-			panic("unsupported string to spec")
-		}
-	}
-
 	if idx == 1 { // sym
 		astnode := ast.children[idx]
 		if astnode.tag != .symbol {
@@ -760,7 +966,7 @@ step_defn :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 			local := new(Local)
 			local.spec = new(Spec)
 			local.spec^ = Spec_NonVoid{}
-			bindings[i] = ScopeBinding{symbol=name, local=local}
+			bindings[i] = ScopeBinding{symbol=name, local=local, tag=.local}
 			params[i].local=local
 			prc.param_locals[i]=local
 		}
@@ -797,6 +1003,87 @@ step_defn :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 		spec^ = void_spec
 		return Msg_DoneNode{node={spec=spec, variant=ana.result^}}
 	}
+}
+
+
+Sem_Defstruct :: struct {
+	name: string,
+}
+
+Ana_Defstruct :: struct {
+	cursor: int,
+	result: ^Sem_Defstruct,
+}
+
+step_defstruct :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
+	ana := &analyser.(Ana_Defstruct)
+	if ana.cursor == 1 {
+		ana.result = new(Sem_Defstruct)
+		if len(ast.children) < 3 {
+			panic("too few children to 'defn'")
+		}
+	}
+	idx := ana.cursor
+	ana.cursor = idx+1
+
+	if idx == 1 { // sym
+		astnode := ast.children[idx]
+		if astnode.tag != .symbol {
+			panic("'def' must have symbol")
+		}
+		name := astnode.token
+		ana.result.name = name
+
+		// define global symbol
+		decls := &sem.compilation_unit.datatypes
+		append(decls, Decl_Datatype{name=name})
+		decl := &decls[len(decls)-1]
+		cu_define_global_symbol(sem.compilation_unit, name, {tag=.datatype, val={datatype=decl}})
+
+
+		idx := ana.cursor
+		ana.cursor = idx+1
+
+		// members
+
+		for i in idx..<len(ast.children) {
+			mem_ast := ast.children[i]
+			expect_ast_tag(.list, &mem_ast)
+			if len(mem_ast.children)!=2{panic("bad number of children")}
+
+			name_ast := &mem_ast.children[0]
+			expect_ast_tag(.symbol, name_ast)
+			name := name_ast.token
+
+		}
+
+		typeinfo := Type_Struct{name=name}
+		nmembers := len(ast.children)-idx
+		members := make([]Type_Struct_Member, nmembers)
+		byte_offset := 0
+		for i in idx..<len(ast.children) {
+			mem_ast := ast.children[i]
+			name_ast := &mem_ast.children[0]
+			expect_ast_tag(.symbol, name_ast)
+			type_ast := &mem_ast.children[1]
+			expect_ast_tag(.symbol, type_ast)
+
+			mem_typeinfo := new(TypeInfo)
+			mem_typeinfo^ = str_to_typeinfo(type_ast.token)
+			members[i-idx].name = name_ast.token
+			members[i-idx].type = mem_typeinfo
+			members[i-idx].byte_offset = byte_offset
+			byte_offset += type_byte_size(mem_typeinfo)
+		}
+		typeinfo.members = members
+		decl.typeinfo = typeinfo
+
+	// 	return Msg_Analyse{}
+	// } else { // done
+		spec := new(Spec)
+		spec^ = void_spec
+		return Msg_DoneNode{node={spec=spec, variant=ana.result^}}
+	} else {panic("unreachable")}
 }
 
 Sem_ForeignLib :: struct {
@@ -993,9 +1280,39 @@ step_invoke :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 		case .procedure:
 			spec = ana.result.proc_decl.procedure.sem_node.spec
 		case .foreign_proc:
-			// FIXME
+			ctype_to_typeinfo :: proc(ctype: br.ForeignProc_C_Type) -> ^TypeInfo {
+				ti := new(TypeInfo)
+				switch ctype {
+				case .bool:
+					ti^ = Type_Bool{}
+				case .char:
+					ti^ = Type_Integer{nbits=16}
+				case .short:
+					ti^ = Type_Integer{nbits=16}
+				case .int:
+					ti^ = Type_Integer{nbits=32}
+				case .long:
+					ti^ = Type_Integer{nbits=32}
+				case .longlong:
+					ti^ = Type_Integer{nbits=64}
+				case .float:
+					ti^ = Type_Float{nbits=32}
+				case .double:
+					ti^ = Type_Float{nbits=64}
+				case .pointer:
+					vt := new(TypeInfo)
+					vt^ = Type_Void{}
+					ti^ = Type_Pointer{value_type=vt}
+				case .void:
+					ti^ = Type_Void{}
+				case .aggregate:
+					panic("!!!")
+				}
+				return ti
+			}
+
 			spec = new(Spec)
-			spec^=void_spec
+			spec^=Spec_Fixed{typeinfo=ctype_to_typeinfo(ana.proc_decl.foreign_proc.ret_type)^}
 		}
 		return Msg_DoneNode{node={spec=spec, variant=ana.result^}}
 	}
@@ -1004,6 +1321,52 @@ step_invoke :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 
 	return Msg_AnalyseChild{ast=&ast.children[idx], ret_spec=Spec_NonVoid{}}
 }
+
+
+
+Sem_Intrinsic :: struct {
+	op: br.Opcode,
+	args: []SemNode,
+}
+
+Ana_Intrinsic :: struct {
+	cursor: int,
+	op: br.Opcode,
+	result: ^Sem_Intrinsic,
+}
+
+step_intrinsic :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
+	ana := &analyser.(Ana_Intrinsic)
+	if ana.cursor == 1 {
+		ana.result = new(Sem_Intrinsic)
+		ana.result.args = make([]SemNode, len(ast.children)-1)
+		ana.result.op = ana.op
+	} else {
+		ana.result.args[ana.cursor-2]=sem.latest_semnode
+	}
+	if ana.cursor >= len(ast.children) {
+		spec : ^Spec
+		#partial switch ana.op {
+		case:
+			panic("unhandled intrinsic")
+		case .mem_copy:
+			expect_nchildren_equals(ast, 4)
+			spec=&void_spec
+		}
+		return Msg_DoneNode{node={spec=spec, variant=ana.result^}}
+	}
+	idx := ana.cursor
+	ana.cursor = idx+1
+
+	return Msg_AnalyseChild{ast=&ast.children[idx], ret_spec=Spec_NonVoid{}}
+}
+
+expect_nchildren_equals :: proc(ast: ^AstNode, n: int, loc := #caller_location) {
+	if len(ast.children)!=n{
+		panic("invalid number of children", loc)
+	}
+}
+
 
 Ana_UnresolvedList :: struct {}
 
@@ -1020,4 +1383,123 @@ step_unresolved_list :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Messa
 	sem.ast_stack[stack_idx] = frame2
 	if msg0 != nil {return msg0}
 	return Msg_Analyse{}
+}
+
+
+Sem_Use :: struct {
+}
+
+Ana_Use :: struct {
+	cursor: int,
+	result: ^Sem_Use,
+}
+
+step_use :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
+	ana := &analyser.(Ana_Use)
+	if ana.cursor == 1 {
+		ana.result = new(Sem_Use)
+		if len(ast.children) > 2 {
+			panic("too many children to 'use'")
+		}
+		if len(ast.children) < 2 {
+			panic("too few children to 'use'")
+		}
+	}
+	idx := ana.cursor
+	// ana.cursor = idx+1
+
+	astnode := ast.children[idx]
+	if astnode.tag != .symbol {
+		panic("'use' must have symbol")
+	}
+	target_name := astnode.token
+	good := false
+	binding : ^ScopeBinding
+	for i := len(sem.scope_stack)-1; i>=0; i-=1 {
+		scope_frame := sem.scope_stack[i]
+		bindings := scope_frame.bindings
+		for j:=len(bindings)-1; j>=0; j-=1 {
+			sym := bindings[j].symbol
+			if sym == target_name {
+				good = true
+				binding = &bindings[j]
+			}
+		}
+	}
+	if !good {panic("could not resolve local to 'use'")}
+
+	typeinfo := spec_to_typeinfo(binding.local.spec)
+
+	#partial switch ti in typeinfo {
+	case Type_Struct:
+		members := ti.members
+
+		bindings := make([]ScopeBinding, len(members))
+		for member, i in members {
+			alias_binding : ScopeBinding
+			alias_binding.symbol = member.name
+			alias_binding.tag = .alias
+			alias_binding.alias.binding = binding
+			alias_binding.alias.member_name = member.name
+			bindings[i] = alias_binding
+		}
+
+		scope_frame := ScopeStackFrame{bindings=bindings}
+		append(&sem.scope_stack, scope_frame)
+	case:
+		fmt.panicf("invalid type for use: %v\n", ti)
+	}
+
+	spec := &void_spec
+
+	return Msg_DoneNode{node={spec=spec, variant=ana.result^}}
+}
+
+
+Sem_Cast :: struct {
+	typeinfo: ^TypeInfo,
+	child: ^SemNode,
+}
+
+Ana_Cast :: struct {
+	cursor: int,
+	result: ^Sem_Cast,
+}
+
+step_cast :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
+	ana := &analyser.(Ana_Cast)
+	if ana.cursor == 1 {
+		ana.result = new(Sem_Cast)
+		ana.result.child = new(SemNode)
+		if len(ast.children) > 3 {
+			panic("too many children to 'cast'")
+		}
+		if len(ast.children) < 3 {
+			panic("too few children to 'cast'")
+		}
+	}
+	idx := ana.cursor
+	ana.cursor = idx+1
+
+	if idx == 1 {
+		astnode := ast.children[idx]
+		if astnode.tag != .symbol {
+			panic("'use' must have symbol")
+		}
+		type_name := astnode.token
+	
+		typeinfo := str_to_typeinfo(type_name)
+		ti := new(TypeInfo)
+		ti^ = typeinfo
+		ana.result.typeinfo = ti
+
+		return Msg_AnalyseChild{ast=&ast.children[2], ret_spec=Spec_Fixed{typeinfo=typeinfo}}
+	} else {
+		ana.result.child^ = sem.latest_semnode
+
+		spec := ana.result.child.spec
+		// spec := new(Spec)
+		// spec^ = Spec_Fixed{typeinfo=typeinfo}
+		return Msg_DoneNode{node={spec=spec, variant=ana.result^}}
+	}
 }

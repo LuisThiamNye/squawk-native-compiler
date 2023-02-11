@@ -145,25 +145,29 @@ print_rt_any :: proc(val: Rt_Any) {
 	}
 }
 
+init_standard_string_typeinfo :: proc(ti: ^TypeInfo) {
+	ti1 := new(TypeInfo)
+	ti1^ = Type_Integer{nbits=64, signedP=true}
+	ti2 := new(TypeInfo)
+	ti2^ = Type_Pointer{value_type=auto_cast new(Type_Void)}
+	ti_mem_1 := new(Type_Struct_Member)
+	ti_mem_1^ = {name="count", type=ti1, byte_offset=0}
+	ti_mem_2 := new(Type_Struct_Member)
+	ti_mem_2^ = {name="data", type=ti2, byte_offset=8}
+	members := make([]Type_Struct_Member, 2)
+	members[0] = ti_mem_1^
+	members[1] = ti_mem_2^
+
+	ti^ = Type_Struct{name="String", members=members}
+}
+
 spec_to_typeinfo :: proc(spec: ^Spec) -> ^TypeInfo {
 	#partial switch sp in spec {
 	case Spec_Fixed:
 		return &sp.typeinfo
 	case Spec_String:
-		ti1 := new(TypeInfo)
-		ti1^ = Type_Integer{nbits=64, signedP=true}
-		ti2 := new(TypeInfo)
-		ti2^ = Type_Pointer{value_type=auto_cast new(Type_Void)}
-		ti_mem_1 := new(Type_Struct_Member)
-		ti_mem_1^ = {name="count", type=ti1, byte_offset=0}
-		ti_mem_2 := new(Type_Struct_Member)
-		ti_mem_2^ = {name="data", type=ti2, byte_offset=8}
-		members := make([]Type_Struct_Member, 2)
-		members[0] = ti_mem_1^
-		members[1] = ti_mem_2^
-
 		ti := new(TypeInfo)
-		ti^ = Type_Struct{name="String", members=members}
+		init_standard_string_typeinfo(ti)
 		return ti
 	case: fmt.panicf("unhandled case for spec->typeinfo: %v\n", spec)
 	}
@@ -190,6 +194,22 @@ spec_coerce_to_equal_types :: proc(specs: []^Spec) -> (_spec: ^Spec, ok: bool) {
 			case Spec_Number:
 				eq = true
 			}
+		case Spec_Fixed:
+			#partial switch fixed in s.typeinfo {
+			case Type_Integer:
+				#partial switch ps in prev_spec {
+				case Spec_Number:
+					// TODO back-propagate specific type
+					eq = true
+				case Spec_Fixed:
+					#partial switch pfixed in ps.typeinfo {
+					case Type_Pointer:
+						// @Temporary
+						specs[i]^ = specs[i-1]^
+						eq = true
+					}
+				}
+			}
 		}
 
 		if eq {
@@ -203,4 +223,74 @@ spec_coerce_to_equal_types :: proc(specs: []^Spec) -> (_spec: ^Spec, ok: bool) {
 		return prev_spec, true
 	}
 	return nil, false
+}
+
+// @Temporary
+
+str_to_spec :: proc(s: string) -> Spec {
+	switch s {
+	case "uint":
+		return Spec_Fixed{typeinfo=Type_Integer{signedP=false, nbits=64}}
+	case "int":
+		return Spec_Fixed{typeinfo=Type_Integer{signedP=true, nbits=64}}
+	case "rawptr":
+		return Spec_Fixed{typeinfo=Type_Integer{signedP=true, nbits=64}}
+	case "String":
+		return Spec_String{}
+	case:
+		panic("unsupported string to spec")
+	}
+}
+
+str_to_typeinfo :: proc(s: string) -> TypeInfo {
+	if s[0]=='*' {
+		inner := s[1:]
+		v := new(TypeInfo)
+		v^ = str_to_typeinfo(inner)
+		return Type_Pointer{value_type=v}
+	}
+	switch s {
+	case "u8":
+		return Type_Integer{signedP=false, nbits=8}
+	case "u16":
+		return Type_Integer{signedP=false, nbits=16}
+	case "u32":
+		return Type_Integer{signedP=false, nbits=32}
+	case "u64":
+		return Type_Integer{signedP=false, nbits=64}
+	case "uint":
+		return Type_Integer{signedP=false, nbits=64}
+	case "int":
+		return Type_Integer{signedP=true, nbits=64}
+	case "rawptr":
+		return Type_Integer{signedP=true, nbits=64}
+	case "String":
+		ti: TypeInfo
+		init_standard_string_typeinfo(&ti)
+		return ti
+	case:
+		panic("unsupported string to typeinfo")
+	}
+}
+
+typeinfo_get_member :: proc(typeinfo: ^TypeInfo, member_name: string) -> ^Type_Struct_Member {
+	#partial switch ti in typeinfo {
+	case Type_Struct:
+		for mem in &ti.members {
+			if mem.name == member_name {
+				return &mem
+			}
+		}
+	case:
+		panic("!!!")
+	}
+	panic("unreachable")
+}
+
+spec_get_member :: proc(spec: ^Spec, name: string) -> ^Spec {
+	typeinfo := spec_to_typeinfo(spec)
+	mem_typeinfo := typeinfo_get_member(typeinfo, name).type
+	spec := new(Spec)
+	spec^ = Spec_Fixed{typeinfo=mem_typeinfo^}
+	return spec
 }

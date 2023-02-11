@@ -1,0 +1,15 @@
+
+(defentity ProcInfo
+  (:nparams u8)
+  (:nreturns u8)
+  (:code [u8])
+  (:stack-nwords u16)
+  (:nregisters u8)
+  (:constant-pool Constant-Pool)
+  (:foreign-procs))
+
+(defentity StackFrame
+  (:proc-info ProcInfo :use :as)
+  (:pc int)
+  (:registers [Register
+               :count (:nregisters proc-info)]))

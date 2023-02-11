@@ -53,6 +53,11 @@ Opcode :: enum u8 {
 	store_32, // stores copy the least significant bytes
 	store_16,
 	store_8,
+	mem_copy, // assumes non-overlapping
+	mem_copy_imm, // assumes non-overlapping
+	
+	get_stack_addr,
+
 	copy,
 
 	goto,
@@ -95,14 +100,17 @@ Opcode :: enum u8 {
 	f64_to_f32,
 }
 
+RegisterValue :: struct #raw_union {u64: u64, s64: i64, ptr: rawptr}
+
 StackFrame :: struct {
 	pc: int,
 	code: []u8,
-	memory: rawptr,
+	registers: [^]RegisterValue,
+	stack_memory: rawptr,
 	constant_pool: ProcConstantPool,
 	foreign_procs: []ForeignProc,
 
-	return_memory: rawptr,
+	return_registers: [^]RegisterValue,
 	return_offsets: []u8,
 }
 
@@ -141,7 +149,8 @@ ProcInfo :: struct {
 	nparams: u8,
 	nreturns: u8,
 	code: []u8,
-	memory_nwords: int,
+	stack_nwords: u16,
+	nregisters: int,
 	constant_pool: ProcConstantPool,
 	foreign_procs: []ForeignProc, // needs to be initialised with proc pointers
 }
