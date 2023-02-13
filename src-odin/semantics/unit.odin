@@ -42,7 +42,7 @@ CompilationUnit :: struct {
 	procedures: [dynamic]SemProcedure,
 	foreign_procs: [dynamic]Decl_ForeignProc,
 	foreign_libs: [dynamic]Decl_ForeignLib,
-	datatypes: [dynamic]Decl_Datatype,
+	datatypes_map: map[string]^Decl_Datatype,
 }
 
 SymbolDeclaration :: struct {
@@ -53,6 +53,94 @@ SymbolDeclaration :: struct {
 		foreign_proc: ^Decl_ForeignProc,
 		datatype: ^Decl_Datatype,
 	},
+}
+
+cu_load_standard_types :: proc(using cnode: ^CompilationUnit) {
+	bucket := make([]Decl_Datatype, 20)
+	n_ := 0
+	n := &n_
+	add_it :: proc(using cnode: ^CompilationUnit, bucket: []Decl_Datatype, dt: Decl_Datatype, n: ^int) {
+		n_ := n^
+		bucket[n_]=dt
+		datatypes_map[dt.name] = &bucket[n_]
+		n^ += 1
+	}
+	{
+		name := "u8"
+		ti := Type_Integer{signedP=false, nbits=8}
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
+	{
+		name := "u16"
+		ti := Type_Integer{signedP=false, nbits=16}
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
+	{
+		name := "u32"
+		ti := Type_Integer{signedP=false, nbits=32}
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
+	{
+		name := "u64"
+		ti := Type_Integer{signedP=false, nbits=64}
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
+	{
+		name := "i8"
+		ti := Type_Integer{signedP=true, nbits=8}
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
+	{
+		name := "i16"
+		ti := Type_Integer{signedP=true, nbits=16}
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
+	{
+		name := "i32"
+		ti := Type_Integer{signedP=true, nbits=32}
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
+	{
+		name := "i64"
+		ti := Type_Integer{signedP=true, nbits=64}
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
+
+	{
+		name := "uint"
+		ti := Type_Integer{signedP=false, nbits=64}
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
+	{
+		name := "int"
+		ti := Type_Integer{signedP=true, nbits=64}
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
+
+	{
+		name := "rawptr"
+		ti := Type_Integer{signedP=true, nbits=64}
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
+
+	{
+		name := "String"
+		ti : TypeInfo
+		init_standard_string_typeinfo(&ti)
+		dt := Decl_Datatype{name=name, typeinfo=ti}
+		add_it(cnode, bucket, dt, n)
+	}
 }
 
 cu_analyse_node_maximally :: proc(cnode: ^CompilationNode) -> bool {

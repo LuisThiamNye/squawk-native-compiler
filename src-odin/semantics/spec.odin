@@ -48,6 +48,7 @@ TypeInfo :: union {
 	Type_Integer,
 	Type_Float,
 	Type_Struct,
+	Type_Static_Array,
 	Type_Alias,
 }
 
@@ -79,6 +80,11 @@ Type_Struct_Member :: struct {
 	byte_offset: int,
 }
 
+Type_Static_Array :: struct {
+	count: int,
+	item_type: ^TypeInfo,
+}
+
 Type_Alias :: struct {
 	backing_type: ^TypeInfo,
 }
@@ -105,8 +111,12 @@ type_byte_size :: proc(info: ^TypeInfo) -> int {
 			total += type_byte_size(member.type)
 		}
 		return total
+	case Type_Static_Array:
+		item_size := type_byte_size(var.item_type)
+		return item_size * var.count
 	case Type_Alias: return type_byte_size(var.backing_type)
-	case: panic("unreachable")
+	case:
+		fmt.panicf("unreachable, unexpected data %v\n", info)
 	}
 }
 
@@ -141,6 +151,15 @@ print_rt_any :: proc(val: Rt_Any) {
 				data=mem.ptr_offset(cast(^u8) val.data, member.byte_offset)})
 		}
 		fmt.println("}")
+	case Type_Static_Array:
+		fmt.print("[")
+		base := val.data
+		item_size := type_byte_size(var.item_type)
+		for i in 0..<var.count {
+			data := mem.ptr_offset(cast(^u8) base, i*item_size)
+			print_rt_any({type=var.item_type, data=data})
+		}
+		fmt.print("]")
 	case Type_Alias: print_rt_any({type=var.backing_type, data=val.data})
 	}
 }

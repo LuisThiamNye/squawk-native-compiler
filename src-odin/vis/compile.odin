@@ -50,6 +50,7 @@ compile_sample :: proc() {
 	nodes := ast.builder_to_astnodes(ast_builder)
 
 	cunit := new(semantics.CompilationUnit)
+	cu_load_standard_types(cunit)
 	cnodes := make([dynamic]^semantics.CompilationNode, len(nodes))
 	for node, i in nodes {
 		using semantics

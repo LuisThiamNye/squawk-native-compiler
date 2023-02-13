@@ -47,12 +47,23 @@
   (_obsolete_creator-type u32)
   (_obsolete_finder-flags u16))
 
+(defstruct Caller-Context
+  (thread rawptr)
+  (allocator rawptr)
+  (allocator-data rawptr)
+  (thread-locals rawptr))
+
+(defn root-allocator-proc
+  [(op int) (nbytes int) (alignment int)]
+  -> [(memory rawptr)]
+  (do
+    (allocate nbytes)))
+
 (defn main [] -> [_]
   (do
     (let dir (cstring ".\\*"))
-    ; (let file-data (allocate ))
-    ; (let s "abc")
-    ; s/count
+    (let file-data (new Win32-Find-Data))
+    ; (let f (x/proc root-allocator-proc))
     dir))
 
 

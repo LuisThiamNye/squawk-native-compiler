@@ -3,6 +3,7 @@ package semantics
 import "../ast"
 import "core:fmt"
 import "core:mem"
+import "core:strconv"
 import "../numbers"
 import "core:strings"
 
@@ -510,14 +511,13 @@ step_let :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 			ana.result.initialiser_tag=.type_default
 
 			// resolve type
-			for dt in &sem.compilation_unit.datatypes {
-				if dt.name == typestr {
-					typeinfo := &dt.typeinfo
-					ana.result.typeinfo = typeinfo
-					return Msg_Analyse{}
-				}
+			dt, found := sem.compilation_unit.datatypes_map[typestr]
+			if !found {
+				panic("could not resolve type for let initialiser")
 			}
-			panic("could not resolve type for let initialiser")
+			typeinfo := &dt.typeinfo
+			ana.result.typeinfo = typeinfo
+			return Msg_Analyse{}
 		}
 
 		return Msg_AnalyseChild{ast=&ast.children[idx], ret_spec=Spec_NonVoid{}}
@@ -1035,9 +1035,9 @@ step_defstruct :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 		ana.result.name = name
 
 		// define global symbol
-		decls := &sem.compilation_unit.datatypes
-		append(decls, Decl_Datatype{name=name})
-		decl := &decls[len(decls)-1]
+		decl := new(Decl_Datatype)
+		decl.name=name
+		sem.compilation_unit.datatypes_map[name]=decl
 		cu_define_global_symbol(sem.compilation_unit, name, {tag=.datatype, val={datatype=decl}})
 
 
@@ -1066,10 +1066,41 @@ step_defstruct :: proc(sem: ^SemCtx, using frame: ^AstStackFrame) -> Message {
 			name_ast := &mem_ast.children[0]
 			expect_ast_tag(.symbol, name_ast)
 			type_ast := &mem_ast.children[1]
-			expect_ast_tag(.symbol, type_ast)
 
-			mem_typeinfo := new(TypeInfo)
-			mem_typeinfo^ = str_to_typeinfo(type_ast.token)
+			
+
+			// resolve type
+
+			resolve_type :: proc(sem: ^SemCtx, type_ast: ^AstNode) -> ^TypeInfo {
+				mem_typeinfo : ^TypeInfo
+				if type_ast.tag == .symbol {
+					typestr := type_ast.token
+					dt, found := sem.compilation_unit.datatypes_map[typestr]
+					if !found {
+						panic("could not resolve type")
+					}
+					mem_typeinfo = &dt.typeinfo
+				} else if type_ast.tag == .vector {
+					expect_nchildren_equals(type_ast, 2)
+					item_ast := &type_ast.children[0]
+					item_type := resolve_type(sem, item_ast)
+
+					count_ast := &type_ast.children[1]
+					expect_ast_tag(.number, count_ast)
+					count, ok := strconv.parse_int(count_ast.token)
+					if !ok {panic("not okay parsing")}
+
+					mem_typeinfo = new(TypeInfo)
+					mem_typeinfo^ = Type_Static_Array{count=count, item_type=item_type}
+				} else {
+					fmt.panicf("bad ast tag for type specification %v\n", type_ast)
+				}
+				return mem_typeinfo
+			}
+
+			mem_typeinfo := resolve_type(sem, type_ast)
+
+
 			members[i-idx].name = name_ast.token
 			members[i-idx].type = mem_typeinfo
 			members[i-idx].byte_offset = byte_offset
