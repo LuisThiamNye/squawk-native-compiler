@@ -1,0 +1,123 @@
+
+#_(def struct
+  (make-macro-fn
+    .param-syms [:form]
+    .code
+    (quote
+      (make-struct
+        .members))))
+
+;; intrinsics:
+;; macros: [fn struct let do set if cast foreign-proc]
+;; functions: [foreign-library + - *]
+
+(def Counted-Array
+  (struct
+    (count int)
+    (data rawptr)))
+
+(def Foreign-Lib
+  (struct
+    (path String)))
+
+(def foreign-library
+  (fn [(path String)] -> [(_ Foreign-Lib)]
+    (do
+      (let lib (new Foreign-Lib))
+      (set lib/path path)
+      lib)))
+
+(def Foreign-Proc-C-Type
+  (enum
+    [:void :bool :char :short :int :long :longlong
+     :float :double :pointer]))
+
+(def Decl-Foreign-Proc
+  (struct
+    (name String)
+    (lib Foreign-Lib)
+    (param-types (tArr Foreign-Proc-C-Type))
+    (ret-type Foreign-Proc-C-Type)))
+
+(def foreign-proc
+  (fn [(params Counted-Array)
+       (ret-type Type-Info)
+       (lib Foreign-Lib)]
+    -> [(_ Decl-Foreign-Proc)]
+    (do
+      (let r (new Decl-Foreign-Proc))
+      (set r/name "ANONYMOOSE-proc")
+      (set r/lib lib)
+      (set r/ret-type ret-type)
+      (set r/param-types (make-arr Foreign-Proc-C-Type params/count))
+      r)))
+
+(def Kernel32 (foreign-library "Kernel32.dll"))
+
+(def GetLastError (foreign-proc [] u32 Kernel32))
+(def GetProcessHeap (foreign-proc [] rawptr Kernel32))
+(def HeapAlloc (foreign-proc [[:heap rawptr] [:flags u32] [:nbytes uint]] rawptr Kernel32))
+
+
+(def allocate
+  (fn [(nbytes uint)] -> [(memory rawptr)]
+    (HeapAlloc (GetProcessHeap) 0 nbytes)))
+
+(def cstring
+  (fn [(s String)] -> [rawptr]
+    (do
+      (let cs (allocate (+ 1 s/count)))
+      (memcopy cs s/data s/count)
+      (set (+ cs s/count) 0)
+      cs)))
+
+(def Point
+  (struct
+    (x int)
+    (y int)))
+
+(def String
+  (struct
+    (count int)
+    (data rawptr)))
+
+(def File-Time
+  (struct
+    (low-date-time u32)
+    (high-date-time u32)))
+
+(def Win32-Find-Data
+  (struct
+    (file-attributes u32)
+    (creation-time File-Time)
+    (last-access-time File-Time)
+    (last-write-time File-Time)
+    (file-size-high u32)
+    (file-size-low u32)
+    (reserved0 u32)
+    (reserved1 u32)
+    (file-name [u16 260])
+    (alternate-file-name [u16 14])
+    (_obsolete_file-type u32)
+    (_obsolete_creator-type u32)
+    (_obsolete_finder-flags u16)))
+
+(def Caller-Context
+  (struct
+    (thread rawptr)
+    (allocator rawptr)
+    (allocator-data rawptr)
+    (thread-locals rawptr)))
+
+(def root-allocator-proc
+  (fn [(op int) (nbytes int) (alignment int)]
+    -> [(memory rawptr)]
+    (do
+      (allocate nbytes))))
+
+(def main
+  (fn [] -> [_]
+    (do
+      (let dir (cstring ".\\*"))
+      (let file-data (new Win32-Find-Data))
+      dir)))

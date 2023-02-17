@@ -185,7 +185,7 @@ p:x ;; (*Point)-@>int
 ;; use pointer
 p:*y ;; Point->*int
 ;; set pointer
-(set *p:y (new int))
+(set *p:y (new int)) ;; (*Point)->(**int)
 ;; use value
 p:y ;; Point->*int-@>int
 ;; set value
@@ -282,3 +282,146 @@ s:pos:x ;; int
 
 
 
+
+
+
+
+
+;; if member x is int
+point/a/b/c/x ;; int
+;; to get a pointer to the x member in its parent struct:
+point/a/b/c/'x ;; *int
+;; Q: what if point is a non-pointer local?
+
+;; but what if x is changed from int to *int?
+;; the consumer code only wants the int but we
+;; do not want to change the code.
+;; Constraint: assume names are coupled to a specific type;
+;; a change of type warrants a change of name.
+;; (Considering that because '/' is auto-dereffing, whether struct
+;; members higher up in the access hierarchy can be changed between
+;; value and pointer, so it is a strange exception to have the last
+;; member be different to this)
+
+;; a patch to continue support for 'x'
+(struct Point
+  (*x *int)
+  (x :deref *x))
+
+point/a/b/c/x ;; int
+point/a/b/c/'x ;; *int
+
+;; refactoring tools could then be used to take further steps
+
+
+(struct Thing (name String) (ptr *Thing))
+;; Alternative access syntax & semantics:
+;; ideally you don't want the set-target expression to be much
+;; different to the accessor
+(let r (new Thing))
+(set r/name "")
+(f r/name)
+;; the / could be taking some sort of reference to the member
+;; relative to the parent, and that reference gets automatically
+;; dereferenced everywhere but 'set', and is not affected by the
+;; underlying data types.
+;; but what if referring the members into scope?
+(let r (new Thing))
+(use r)
+(set name "")
+(f name)
+;; this can't work, as 'name' is not a reference, but is the value.
+;; perhaps this:
+(set /name "")
+;; why not just make symbols references by default?
+(set name "")
+(let y Thing.)
+(set y other-thing) ;; sets the local #'y
+(f y) ;; gets the value at y (Thing)
+(let z (new Thing))
+(set z other-thing-ptr)
+(set @z other-thing)
+;; the above illustrates the problem with making symbols references.
+;; as using @ would create a context where z gets dereferenced
+;; automatically, so @ causes #'z to get dereferenced twice.
+;; perhaps:
+(set z/ other-thing)
+;; But that starts to get confusing.
+
+;; Maybe we can do this better:
+(let y Thing.)
+(set y other-thing) ;; invalid
+(set #'y other-thing) ;; sets the local #'y
+
+(let z (new Thing))
+(set #'z other-thing-ptr)
+(set z other-thing)
+
+(let r (new Thing))
+(set r/name "")
+(f r/name)
+;; The symbol only becomes a reference when using 'use'
+;; 'name' is basically replaced with 'r/name'
+(use r)
+(set name "")
+(f name)
+;; but what setting the value at the pointer 'ptr'
+(set r/ptr other-thing) ;; invalid: **Thing, Thing
+(set @r/ptr other-thing) ;; invalid: Thing, Thing (same problem shown by 'z')
+(set r/ptr/ other-thing) ;; valid: *Thing, Thing
+(set ptr/ other-thing)
+;; now we are inconsistent with setting local pointers, so
+;; references in this way seem like a bad idea.
+;; If 'set' did auto-reference wrapping like Odin,
+;; that would be a better solution
+
+;; If we go back to the beginning, instead of
+point/a/b/c/'x ;; *int
+;; it might have been better to do
+#'point/a/b/c/x ;; *int
+;; which maintains more correspondance with the usage:
+point/a/b/c/x ;; int
+(use point/a/b/c)
+c ;; int
+#'c ;; *int
+
+
+
+;; Aliases: might be useful
+(let x 2)
+(alias y #'x) ;; y is like a local that shares storage with x
+(set y 0)
+x ;; => 0
+
+;; What is 'let' worked differently, closer to how top-level
+;; constant declarations work?
+(let z 2)
+z ;; => 2
+(set z 0) ;; invalid
+(let x (mut 2))
+(let y x)
+(set y 0)
+@x ;; => 0
+;; (Imagine 'let' replaced with 'def')
+;; Note this is still compatible with before, if you really want
+;; mutable local definitions
+(set #'x ...)
+(set #'y/name "")
+(let aliased-x #'x)
+;; Now consider:
+(let r (new Thing)) ;; just replace 'new' with 'mut' for stack allocation
+(set r/name "")
+(f @r/name)
+;; but having to to @ is annoying. For 'owned' pointers, we
+;; might be able to do some auto-dereffing in some places.
+;; Auto-dereffing would work best without pointer arithmetic.
+;; Maybe a more subtle syntax for auto-dereferencing:
+(f r/name/) ;; works whether r is pointer or value
+;; Now:
+(let y Thing.)
+(f y/name) ;; note: no @ needed
+;; Now: auto-dereffing
+(let *r (new Thing))
+(set *r/name "")
+(let-deref r *r) ;; or this? (let r (auto-deref *r))
+(f r/name)

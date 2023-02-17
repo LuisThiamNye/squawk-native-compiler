@@ -12,9 +12,10 @@ import "../parser"
 import "../semantics"
 import "../ast"
 import "../vis"
+import "../interpreter"
 
 // sq_src_path :: "samples/test.edn"
-sq_src_path :: "samples/eg_linesof.sq"
+sq_src_path :: "samples/eg_linesof2.sq"
 
 compile_sample :: proc() {
 	// bytecode_runner.run()
@@ -45,9 +46,26 @@ compile_sample :: proc() {
 		// fmt.printf("%v %s\n", line, parser_ctx.buf[msg.start_idx:msg.end_idx])
 	}
 
-	using semantics
 
-	nodes := ast.builder_to_astnodes(ast_builder)
+	nodes := ast.builder_to_astnodes(ast_builder)[:]
+
+	interp := interpreter.make_interp_from_ast_nodes(nodes, ast_builder.max_depth)
+
+	main_var, found := interpreter.find_var(interp, "main")
+	if !found {panic("main not found")}
+	main_var_interp := interp.var_interp_map[main_var]
+
+	interpreter.interp_from_var(main_var, main_var_interp)
+
+	if main_var.value.type!=interpreter.typeinfo_of_dynproc {
+		fmt.println(main_var.value)
+		panic("!!")
+	}
+	interpreter.execute_invoke_dynproc(interp, cast(^interpreter.DynProc) main_var.value.data, {})
+
+
+	/*
+	using semantics
 
 	cunit := new(semantics.CompilationUnit)
 	cu_load_standard_types(cunit)
@@ -133,5 +151,7 @@ compile_sample :: proc() {
 			fmt.println(cast(cstring) ret0.ptr)
 		}
 	}
+
+	*/
 	
 }

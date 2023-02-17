@@ -277,6 +277,14 @@ str_to_typeinfo :: proc(s: string) -> TypeInfo {
 		return Type_Integer{signedP=false, nbits=32}
 	case "u64":
 		return Type_Integer{signedP=false, nbits=64}
+	case "s8":
+		return Type_Integer{signedP=true, nbits=8}
+	case "s16":
+		return Type_Integer{signedP=true, nbits=16}
+	case "s32":
+		return Type_Integer{signedP=true, nbits=32}
+	case "s64":
+		return Type_Integer{signedP=true, nbits=64}
 	case "uint":
 		return Type_Integer{signedP=false, nbits=64}
 	case "int":
@@ -288,7 +296,7 @@ str_to_typeinfo :: proc(s: string) -> TypeInfo {
 		init_standard_string_typeinfo(&ti)
 		return ti
 	case:
-		panic("unsupported string to typeinfo")
+		fmt.panicf("unsupported string to typeinfo: %v\n", s)
 	}
 }
 
