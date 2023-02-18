@@ -1,5 +1,11 @@
 package dyncall
 
+// Note: C's int could be 32 or 64 bits depending
+// on how the library was compiled.
+// Dyncall "encapsulates function call invocation semantics that
+// depend on the compiler, operating system and architectur".
+// Parameter types get promoted according to the calling convention.
+
 foreign import dyncall_lib "dyncall_s.lib"
 
 DCCallVM :: distinct rawptr

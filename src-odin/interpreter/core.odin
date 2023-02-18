@@ -292,64 +292,6 @@ find_var :: proc(interp: ^Interp, str: string) -> (^Var, bool) {
 }
 
 
-
-resolve_symbol :: proc(vi: ^VarInterp, str: string) -> Rt_Any {
-
-	// Handle member access
-	slash_idx := strings.index_byte(str, '/')
-	members : []string
-	target_name : string
-	if slash_idx>=0 {
-		if slash_idx==len(str)-1 {
-			panic("delimiter can't be at the end")
-		}
-		target_name = str[0:slash_idx]
-		members = make([]string, 1)
-		members[0] = str[slash_idx+1:]
-	} else {
-		target_name = str
-	}
-
-	// Simple symbol
-	sym := get_interned_symbol(vi.unit_interp, target_name)
-	ret: Rt_Any
-
-	// TODO fix asymmetry between returning vars and values of locals
-	exit: {
-		// try local
-		for lsym, i in vi.lexical_binding_syms {
-			if lsym == sym {
-				lb := vi.lexical_bindings[i]
-				ret = lb.value
-
-				// FIXME members only work for this
-				// FIXME members>1
-				if len(members)>0 {
-					memb_info := typeinfo_get_member(lb.value.type, members[0])
-					offset := memb_info.byte_offset
-					ret.type = memb_info.type
-					ret.data = mem.ptr_offset(cast(^u8) ret.data, offset)
-				}
-
-				break exit
-			}
-		}
-	
-		// try var
-		var, found := vi.unit_interp.var_map[sym]
-		if found {
-			ret.type = typeinfo_of_var
-			ret.data = var
-			break exit
-		}
-
-		fmt.panicf("var not found: %v", target_name)
-	}
-
-	return ret
-}
-
-
 Proc_Param :: struct {
 	symbol: ^InternedSymbol,
 	typeinfo: ^Type_Info,
@@ -364,6 +306,19 @@ DynProc :: struct {
 	params: []Proc_Param,
 	returns: []Proc_Return,
 	code_ast_node: ^ast.AstNode,
+}
+
+
+
+Lazy_Member_Access_Access :: struct #raw_union {
+	ptr_deref: bool,
+	byte_offset: int,
+}
+
+Lazy_Member_Access :: struct {
+	object: Rt_Any,
+	accesses: []Lazy_Member_Access_Access,
+	typeinfo: ^Type_Info,
 }
 
 vi_interp_frame :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
@@ -470,19 +425,133 @@ vi_interp_frame :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 		}
 
 	case .symbol:
-		val := resolve_symbol(vi, ast_node.token)
-		if val.type == typeinfo_of_var {
-			var := cast(^Var) val.data
-			if !var.initialised {
-				vi.blocked_by_var = var
-				return
+		val : Rt_Any
+		has_val := false
+		if cursor == 0 {
+			frame.data = nil
+			str := ast_node.token
+			// Handle member access
+			slash_idx := strings.index_byte(str, '/')
+			members : []string
+			target_name : string
+			if slash_idx>=0 {
+				if slash_idx==len(str)-1 {
+					panic("delimiter can't be at the end")
+				}
+				target_name = str[0:slash_idx]
+				members = make([]string, 1)
+				members[0] = str[slash_idx+1:]
+
+				frame.data = &members
+			} else {
+				target_name = str
 			}
-			result := var.value
-			vi_frame_return(vi, result)
-			return
-		} else {
-			vi_frame_return(vi, val)
+
+			// Simple symbol
+			target_sym := get_interned_symbol(vi.unit_interp, target_name)
+
+			// TODO fix asymmetry between returning vars and values of locals
+			resolve_target_val: {
+				// try local
+				for lsym, i in vi.lexical_binding_syms {
+					if lsym == target_sym {
+						lb := vi.lexical_bindings[i]
+						val = lb.value
+						has_val = true
+						break resolve_target_val
+					}
+				}
+			
+				// try var
+				var, found := vi.unit_interp.var_map[target_sym]
+				if found {
+					if !var.initialised {
+						vi.blocked_by_var = var
+						cursor += 1
+						return
+					}
+					val = var.value
+					has_val = true
+					break resolve_target_val
+				}
+
+				fmt.panicf("unresolved symbol: %v\n", str)
+			}
 		}
+
+		if !has_val {
+			val = vi.last_result
+		}
+
+		if frame.data != nil {
+			members := cast(^[]string) frame.data
+
+			// lazy := new(Lazy_Member_Access)
+			// lazy.object = val
+			// accesses : [dynamic]Lazy_Member_Access_Access
+
+			// t := val.type
+			// for memb_name in members {
+			// 	for {
+			// 		if t.tag==.pointer {
+			// 			a : Lazy_Member_Access_Access
+			// 			a.ptr_deref = true
+			// 			append(&accesses, a)
+			// 			t = t.pointer.value_type
+			// 		} else {break}
+			// 	}
+
+			// 	memb_info := typeinfo_get_member(t, memb_name)
+			// 	a : Lazy_Member_Access_Access
+			// 	a.byte_offset = memb_info.byte_offset
+			// 	append(&accesses, a)
+			// 	t = memb_info.type
+			// }
+			
+			// ma := new(Lazy_Member_Access)
+			// ma.object = val
+			// ma.accesses = accesses[:]
+			// ma.typeinfo = t
+
+			// val.type = new(Type_Info)
+			// val.type.tag = .intrinsic
+			// val.type.intrinsic.tag = .member_access
+			// val.data = ma
+
+
+
+			needs_deref := false
+			ptr := val.data
+			t := val.type
+			for memb_name in members {
+				for {
+					if t.tag==.pointer {
+						needs_deref = true
+						if t.pointer.value_type.tag == .pointer{
+							if ptr==nil {
+								panic("object pointer is nil when trying to access member")
+							}
+							ptr = (cast(^rawptr) ptr)^
+						}
+						t = t.pointer.value_type
+					} else {break}
+				}
+				memb_info := typeinfo_get_member(t, memb_name)
+				ptr = mem.ptr_offset(cast(^u8) ptr, memb_info.byte_offset)
+				t = memb_info.type
+			}
+			if needs_deref {
+				val.type = new(Type_Info)
+				val.type.tag = .pointer
+				val.type.pointer.value_type = t
+			} else {
+				val.type = t
+			}
+			val.data = ptr
+		}
+
+
+		vi_frame_return(vi, val)
 
 	case .vector:
 		nargs := len(ast_node.children)
@@ -559,7 +628,7 @@ vi_push_frame :: proc(using vi: ^VarInterp, ast_node: ^ast.AstNode) {
 }
 
 vi_frame_return :: proc(vi: ^VarInterp, result: Rt_Any) {
-	assert(result.data != nil)
+	assert(result.data != nil || result.type.tag==.pointer)
 	vi.last_result=result
 	// fmt.println("RET:", result)
 	vi.ast_stack_endx -= 1
@@ -617,6 +686,7 @@ interp_from_varinterp :: proc(var_interp: ^VarInterp) {
 			prev.blocked_by_var.value = vi.last_result
 			// fmt.println("Done with", prev.blocked_by_var.symbol.name)
 			prev.blocked_by_var = nil
+			prev.last_result = vi.last_result
 			pop(&stack)
 			vi = prev
 		}
@@ -679,27 +749,40 @@ intrinsic_set :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 	children := ast_node.children
 	if len(children)!=3 {panic("!!")}
 
+
 	if cursor == 0 {
+		target_ast := &children[1]
+		cursor += 1
+		vi_push_frame(vi, target_ast)
+		return
+	}
+	if cursor == 1 {
+		target_ptr := new(Rt_Any)
+		target_ptr^ = vi.last_result
+		frame.data = target_ptr
+
 		val_ast := &children[2]
 		cursor += 1
 		vi_push_frame(vi, val_ast)
 		return
 	}
 
+	target := cast(^Rt_Any) frame.data
 	val := vi.last_result
 
-	sym_ast := &children[1]
-	expect_ast_tag(.symbol, sym_ast)
-	target_sym := get_interned_symbol(vi.unit_interp, sym_ast.token)
-
-
-	for sym, i in vi.lexical_binding_syms {
-		if sym == target_sym {
-			lb := vi.lexical_bindings[i]
-			lb.value = val
-			break
+	if target.type.tag == .pointer {
+		if target.data == nil {
+			panic("Exception: 'set' object is nil")
 		}
+		if val.type.tag==.pointer {
+			(cast(^rawptr) target.data)^ = val.data
+		}
+		size := type_byte_size(target.type)
+		mem.copy(target.data, val.data, size)
+	} else {
+		panic("invalid target type for 'set'")
 	}
+
 
 	vi_frame_return(vi, rtany_void)
 }
@@ -942,8 +1025,11 @@ intrinsic_new :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 	nbytes := type_byte_size(typeinfo)
 	memory := mem.alloc(nbytes)
 
+	ti := new(Type_Info)
+	ti.tag = .pointer
+	ti.pointer.value_type = typeinfo
 	ret : Rt_Any
-	ret.type = typeinfo
+	ret.type = ti
 	ret.data = memory
 	vi_frame_return(vi, ret)
 }

@@ -11,6 +11,7 @@ Type_Info :: struct {
 		// procedure,
 		static_array, struct_, enum_,
 		// any,
+		intrinsic,
 	},
 	using alt: struct {
 		integer: Type_Integer,
@@ -20,6 +21,7 @@ Type_Info :: struct {
 		struct_: Type_Struct,
 		static_array: Type_Static_Array,
 		enum_: Type_Enum,
+		intrinsic: Type_Intrinsic,
 	},
 }
 
@@ -61,6 +63,14 @@ Type_Enum :: struct {
 	backing_type: ^Type_Info,
 }
 
+
+
+Type_Intrinsic :: struct {
+	tag: enum {member_access,},
+}
+
+
+
 Rt_Any :: struct {
 	type: ^Type_Info,
 	data: rawptr,
@@ -74,6 +84,9 @@ Rt_Counted_Array :: struct {
 Rt_Keyword :: struct {
 	symbol: ^InternedSymbol,
 }
+
+
+
 
 type_byte_size :: proc(info: ^Type_Info) -> int {
 	shift_right_rounding_up :: #force_inline proc(#any_int x: int, $n: uint) -> int {
@@ -96,9 +109,11 @@ type_byte_size :: proc(info: ^Type_Info) -> int {
 		item_size := type_byte_size(info.static_array.item_type)
 		return item_size * info.static_array.count
 	case .enum_: return type_byte_size(info.enum_.backing_type)
+	case .intrinsic: fallthrough
 	case:
 		fmt.panicf("unreachable, unexpected data %v\n", info)
 	}
+	panic("unreachable")
 }
 
 print_rt_any :: proc(val: Rt_Any, indent_level := 0) {
@@ -153,6 +168,8 @@ print_rt_any :: proc(val: Rt_Any, indent_level := 0) {
 		}
 		fmt.print("]")
 	case .enum_: print_rt_any({type=info.enum_.backing_type, data=val.data})
+	case .intrinsic:
+		fmt.print("<intrinsic>")
 	}
 }
 
@@ -237,7 +254,7 @@ typeinfo_get_member :: proc(typeinfo: ^Type_Info, member_name: string) -> ^Type_
 			}
 		}
 	case:
-		panic("!!!")
+		panic("this type does not support members")
 	}
 	panic("unreachable")
 }

@@ -425,3 +425,20 @@ z ;; => 2
 (set *r/name "")
 (let-deref r *r) ;; or this? (let r (auto-deref *r))
 (f r/name)
+
+;; Perhaps '/' only does
+;; auto dereferencing for members, not the root struct:
+(let a (new Thing))
+a/name ;; => *String
+a/ptr/name ;; => *String
+(let a Thing.)
+a/ptr/name ;; => String
+;; That seems weird, what about:
+(let a (new Thing))
+a/name ;; => *String
+a/ptr/name ;; => *String
+(let a Thing.)
+a/name ;; => String
+a/ptr/name ;; => *String
+;; The latter seems better as long as implicit dereferencing
+;; works well

@@ -30,7 +30,7 @@
 (def Foreign-Proc-C-Type
   (enum
     [:void :bool :char :short :int :long :longlong
-     :float :double :pointer]))
+     :float :double :pointer :aggregate]))
 
 (def Decl-Foreign-Proc
   (struct
@@ -50,7 +50,49 @@
       (set r/lib lib)
       (set r/ret-type ret-type)
       (set r/param-types (make-arr Foreign-Proc-C-Type params/count))
-      r)))
+      r/)))
+
+#_(def typeinfo-to-foreign-c-type
+  (fn [(typeinfo Type-Info)]
+    -> [(_ Foreign-Proc-C-Type)]
+    ;; problem: C's int could be 32 or 64 bits depending
+    ;; on how the library was compiled
+    (case typeinfo/tag
+      [:void :void]
+      [:bool :bool]
+      [:integer
+       (do
+         (let nbits typeinfo/integer/nbits)
+         (case nbits
+           [8 :char]
+           [16 :short]
+           [32 :int]
+           [64 :longlong]))]
+      [:float
+       (do
+         (let nbits typeinfo/float/nbits)
+         (case nbits
+           [32 :float]
+           [64 :double]))]
+      [:pointer :pointer])))
+
+#_(def invoke-foreign-proc
+  (fn [(fp Decl-Foreign-Proc)
+       (args (tArr Any))]
+    -> [(_ Any)]
+    (do
+      (let i 0)
+      (let param-types fp/param-types)
+      (jmps :loop
+        (do
+          (if (< i args/count)
+            (do
+              (let arg (args i))
+              (let argti arg/type)
+              (let pct (param-types i))
+              ;; .......
+              (set' i (+ 1 i))
+              (goto :loop))()))))))
 
 (def Kernel32 (foreign-library "Kernel32.dll"))
 
