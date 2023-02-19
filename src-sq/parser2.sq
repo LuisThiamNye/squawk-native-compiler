@@ -1,0 +1,119 @@
+
+(def Counted-Array
+  (struct
+    (count int)
+    (data rawptr)))
+
+(def String
+  (struct
+    (count int)
+    (data *u8)))
+
+
+
+
+
+
+
+(def Parser
+  (next-idx int)
+  (buf [u8] #_"array view")
+  (coll-stack [CollStackFrame :dyn] #_"dynamic array"))
+
+(def Coll-Type
+  (enum [:round :square :curly]))
+
+(def Coll-Stack-Frame
+  (struct
+    (coll-type Coll-Type)))
+
+(def Message
+  (struct
+    (tag (enum [:none
+                :eof
+                :keyword
+                :symbol
+                :number
+                :string
+                :char
+                :comment
+                :special-comment
+                :quote
+                :meta
+                :coll-start
+                :coll-end
+                :discard]))
+    (start-idx int)
+    (end-idx int)
+    (coll-type Coll-Type)))
+
+(def Macro
+  (enum 
+    [:none :string :comment :quote :meta :round :square :curly :unmatched-delim :char :dispatch]))
+
+(def new-parser
+  (fn [(buf [u8])] -> (_ *Parser)
+    (do
+      (let ret (new Parser))
+      (set ret/buf buf)
+      ret)))
+
+(def get-macro
+  (fn [(char u8)] -> (_ Macro)
+    (case char
+      [#ch "\"" :string]
+      [#ch ";" :comment]
+      [#ch "'" :quote]
+      [#ch "(" :list]
+      [#ch ")" :unmatched-delim]
+      [#ch "[" :vector]
+      [#ch "]" :unmatched-delim]
+      [#ch "{" :map]
+      [#ch "}" :unmatched-delim]
+      [#ch "\\" :char]
+      [#ch "#" :dispatch]
+      [.else :none])))
+
+(def whitespace?
+  (fn [(ch u8)] -> (_ bool)
+    (case ch
+      [#ch " " true]
+      [#ch "tab" true]
+      [#ch "newline" true]
+      [#ch "return" true]
+      [#ch "vtab" true]
+      [#ch "formfeed" true]
+      [.else false])))
+
+(def digit?
+  (fn [(ch u8)] -> (_ bool)
+    (<= #ch "0" ch #ch "9")))
+
+(def terminating-macro?
+  (fn [(ch u8)] -> (_ bool)
+    (and
+      (not= ch #ch "#")
+      (not= ch #ch "'")
+      (not= :none (get-macro ch)))))
+
+(def read-to-nonws
+  (fn [(p *Parser)] -> (:ch u8).+(eof bool)
+    (do (use p)
+      (let endx buf/count)
+      (let i next-idx)
+      (jumps :loop
+        (do
+          (if (= endx i)
+            (do
+              (set next-idx i)
+              (set eof true)
+              0)
+            (do
+              (let ch (buf i))
+              (if (and (whitespace? ch) (not= ch #ch "newline"))
+                (do
+                  (set i (+ 1 i))
+                  (goto :loop))
+                (do
+                  (set next-idx i)
+                  ch)))))))))

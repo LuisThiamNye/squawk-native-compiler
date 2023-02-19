@@ -11,17 +11,25 @@
 ;; macros: [fn struct let do set if cast foreign-proc]
 ;; functions: [foreign-library + - *]
 
-(def Counted-Array
+#_(def Counted-Array
   (struct
     (count int)
     (data rawptr)))
+
+; (def Any
+;   (struct
+;     (type Type-Info)
+;     (data rawptr)))
+
+
+
 
 (def Foreign-Lib
   (struct
     (path String)))
 
 (def foreign-library
-  (fn [(path String)] -> [(_ Foreign-Lib)]
+  (fn [(path String)] -> (_ Foreign-Lib)
     (do
       (let lib (new Foreign-Lib))
       (set lib/path path)
@@ -29,7 +37,7 @@
 
 (def Foreign-Proc-C-Type
   (enum
-    [:void :bool :char :short :int :long :longlong
+    [:nil :void :bool :char :short :int :long :longlong
      :float :double :pointer :aggregate]))
 
 (def Decl-Foreign-Proc
@@ -37,24 +45,32 @@
     (name String)
     (lib Foreign-Lib)
     (param-types (tArr Foreign-Proc-C-Type))
-    (ret-type Foreign-Proc-C-Type)))
+    #_(ret-type Foreign-Proc-C-Type)
+    (ret-typeinfo *Type-Info)))
 
 (def foreign-proc
-  (fn [(params Counted-Array)
-       (ret-type Type-Info)
+  (fn [(params (tArr Any))
+       (ret-type *Type-Info)
+       (name String)
        (lib Foreign-Lib)]
-    -> [(_ Decl-Foreign-Proc)]
+    -> (_ Decl-Foreign-Proc)
     (do
       (let r (new Decl-Foreign-Proc))
-      (set r/name "ANONYMOOSE-proc")
+      (set r/name name)
       (set r/lib lib)
-      (set r/ret-type ret-type)
-      (set r/param-types (make-arr Foreign-Proc-C-Type params/count))
-      r/)))
+      ; (set r/ret-type ret-type)
 
-#_(def typeinfo-to-foreign-c-type
+      ; (prn r)
+      ; (prn ret-type)
+      ; (prn r/ret-typeinfo)
+      (set r/ret-typeinfo ret-type)
+      
+      #_(set r/param-types (make-arr Foreign-Proc-C-Type params/count))
+      r)))
+
+(def typeinfo-to-foreign-c-type
   (fn [(typeinfo Type-Info)]
-    -> [(_ Foreign-Proc-C-Type)]
+    -> (_ Foreign-Proc-C-Type)
     ;; problem: C's int could be 32 or 64 bits depending
     ;; on how the library was compiled
     (case typeinfo/tag
@@ -76,14 +92,26 @@
            [64 :double]))]
       [:pointer :pointer])))
 
-#_(def invoke-foreign-proc
+(def CALL_C_X86_WIN32_STD 2)
+
+(def invoke-foreign-proc
   (fn [(fp Decl-Foreign-Proc)
        (args (tArr Any))]
-    -> [(_ Any)]
+    -> (_ Any)
     (do
+      ; (prn fp)
+      ; (prn fp/ret-typeinfo)
+      (bootstrap-foreign-dyncall
+        ; fp/lib/path
+        "Kernel32.dll"
+        fp/name
+        CALL_C_X86_WIN32_STD
+        args
+        fp/ret-typeinfo))
+    #_(do
       (let i 0)
       (let param-types fp/param-types)
-      (jmps :loop
+      (jumps :loop
         (do
           (if (< i args/count)
             (do
@@ -92,25 +120,34 @@
               (let pct (param-types i))
               ;; .......
               (set' i (+ 1 i))
-              (goto :loop))()))))))
+              (goto :loop))
+            0))))))
+
+
+
 
 (def Kernel32 (foreign-library "Kernel32.dll"))
 
-(def GetLastError (foreign-proc [] u32 Kernel32))
-(def GetProcessHeap (foreign-proc [] rawptr Kernel32))
-(def HeapAlloc (foreign-proc [[:heap rawptr] [:flags u32] [:nbytes uint]] rawptr Kernel32))
+; (def GetLastError (foreign-proc [] u32 "GetLastError" Kernel32))
+(def GetProcessHeap (foreign-proc [] rawptr "GetProcessHeap" Kernel32))
+(def HeapAlloc (foreign-proc [[:heap rawptr] [:flags u32] [:nbytes uint]] rawptr "HeapAlloc" Kernel32))
 
 
+;; FIXME: does not work because returns a typeinfo of
+;; a different pointer to canonical s64.
+;; this is because Type-Info is stored by value
+;; in the foreign proc struct, so gets copied.
 (def allocate
-  (fn [(nbytes uint)] -> [(memory rawptr)]
-    (HeapAlloc (GetProcessHeap) 0 nbytes)))
+  (fn [(nbytes int)] -> (memory rawptr)
+    (do
+      (let HEAP_ZERO_MEMORY 8)
+      (HeapAlloc (GetProcessHeap) 0 nbytes))))
 
 (def cstring
-  (fn [(s String)] -> [rawptr]
+  (fn [(s String)] -> rawptr
     (do
       (let cs (allocate (+ 1 s/count)))
       (memcopy cs s/data s/count)
-      (set (+ cs s/count) 0)
       cs)))
 
 (def Point
@@ -118,7 +155,7 @@
     (x int)
     (y int)))
 
-(def String
+#_(def String
   (struct
     (count int)
     (data rawptr)))
@@ -138,8 +175,8 @@
     (file-size-low u32)
     (reserved0 u32)
     (reserved1 u32)
-    (file-name [u16 260])
-    (alternate-file-name [u16 14])
+    (file-name (tArr u16 260))
+    (alternate-file-name (tArr u16 14))
     (_obsolete_file-type u32)
     (_obsolete_creator-type u32)
     (_obsolete_finder-flags u16)))
@@ -153,13 +190,38 @@
 
 (def root-allocator-proc
   (fn [(op int) (nbytes int) (alignment int)]
-    -> [(memory rawptr)]
+    -> (memory rawptr)
     (do
       (allocate nbytes))))
 
-(def main
-  (fn [] -> [_]
+
+(def test
+  (fn [(fp Decl-Foreign-Proc)]
     (do
-      (let dir (cstring ".\\*"))
-      (let file-data (new Win32-Find-Data))
-      dir)))
+      (prn fp/ret-typeinfo))))
+
+(def test2
+  (fn [(s String)]
+    (do
+      (prn s/data))))
+
+(def main
+  (do
+    (bootstrap-register-data-invoker Decl-Foreign-Proc
+      invoke-foreign-proc)
+    ; (let x "hello")
+    ; (prn x/data)
+    ; (test2 "hello")
+    #_(do
+      (let r (new Decl-Foreign-Proc))
+      (set r/name "hello")
+      (set r/ret-typeinfo u64)
+      
+      (prn r/ret-typeinfo)
+      (test r))
+    ; #_
+    (fn []
+      (do
+        (let dir (cstring ".\\*"))
+        (let file-data (new Win32-Find-Data))
+        dir))))

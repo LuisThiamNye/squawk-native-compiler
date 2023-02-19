@@ -32,7 +32,13 @@ AstNode :: struct {
 	tag: AstNodeTag,
 	using value: AstNodeValue,
 	meta: ^AstMeta,
+	// srcinfo: ^SrcInfo,
 }
+
+// SrcInfo :: struct {
+// 	col: int,
+// 	row: int,
+// }
 
 import "core:io"
 

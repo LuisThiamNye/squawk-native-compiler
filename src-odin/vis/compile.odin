@@ -58,8 +58,7 @@ compile_sample :: proc() {
 	interpreter.interp_from_var(main_var, main_var_interp)
 
 	if main_var.value.type!=interpreter.typeinfo_of_dynproc {
-		fmt.println(main_var.value)
-		panic("!!")
+		panic("!! 'main' var is not a dynproc")
 	}
 	interpreter.execute_invoke_dynproc(interp, cast(^interpreter.DynProc) main_var.value.data, {})
 

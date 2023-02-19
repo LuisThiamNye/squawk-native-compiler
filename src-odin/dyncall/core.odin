@@ -115,7 +115,7 @@ DCchar :: c_.char
 DCuchar :: c_.uchar
 DCshort :: c_.short
 DCushort :: c_.ushort
-DCint :: int
+DCint :: c_.int
 DCuint :: c_.uint
 DClong :: c_.long
 DCulong :: c_.ulong
