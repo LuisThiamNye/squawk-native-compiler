@@ -1,5 +1,7 @@
 package parser
 
+// Possible performance improvement: use pointer to a character rather than index
+
 import "core:fmt"
 import "core:strings"
 
@@ -243,7 +245,8 @@ read_next_form :: proc(using p: ^Ctx) -> Message {
 	if macro != .none {return parse_macro(p, macro)}
 
 	// signed number
-	if (ch=='-' || ch=='+') && next_idx < len(buf) {
+	if (ch=='-' || ch=='+') && next_idx+1 < len(buf) {
+		next_idx += 1
 		ch2 := buf[next_idx]
 		if digitP(ch2) {return parse_number(p, ch, start_idx)}
 	}

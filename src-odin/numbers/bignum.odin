@@ -100,7 +100,7 @@ int_str_to_mag :: proc($TWord: typeid, $TDouble: typeid, str: string, $radix: u6
 	if seg1_len==0 {seg1_len = digits_per_word}
 	seg1 := str[0:seg1_len]
 	word1, ok := strconv.parse_u64_of_base(seg1, cast(int) radix)
-	if !ok {panic("failed to parse int")}
+	if !ok {fmt.panicf("failed to parse int: %v, radix %v\n", seg1, radix)}
     // assign to least significant slot
 	mag1[nwords1-1] = cast(TWord) word1
 

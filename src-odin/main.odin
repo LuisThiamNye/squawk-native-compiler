@@ -47,7 +47,8 @@ main :: proc() {
 exception_handler :: proc "stdcall" (exinfo: ^win.EXCEPTION_POINTERS) -> win.LONG {
 	context = runtime.default_context()
 	using win
-	switch exinfo.ExceptionRecord.ExceptionCode {
+	er := exinfo.ExceptionRecord
+	switch er.ExceptionCode {
 	case EXCEPTION_DATATYPE_MISALIGNMENT,
 		EXCEPTION_ACCESS_VIOLATION,
 		// EXCEPTION_ILLEGAL_INSTRUCTION, // used for panics
@@ -59,7 +60,20 @@ exception_handler :: proc "stdcall" (exinfo: ^win.EXCEPTION_POINTERS) -> win.LON
 		case EXCEPTION_DATATYPE_MISALIGNMENT:
 			fmt.println("datatype misalignment")
 		case EXCEPTION_ACCESS_VIOLATION:
-			fmt.println("access violation")
+			rw := cast(uintptr) er.ExceptionInformation[0]
+			addr := er.ExceptionInformation[1]
+			
+			fmt.println("access violation:")
+			switch rw {
+			case 0:
+				fmt.println("Read.")
+			case 1:
+				fmt.println("Write.")
+			case 8:
+				fmt.println("User-mode data execution prevention (DEP)")
+			}
+			fmt.print("Address: ")
+			fmt.println(addr)
 		case EXCEPTION_ILLEGAL_INSTRUCTION:
 			fmt.println("illegal instruction")
 		}

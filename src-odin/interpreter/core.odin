@@ -4,7 +4,7 @@ import "../ast"
 import "core:fmt"
 import "core:mem"
 import "core:strconv"
-import "../numbers"
+// import "core:math/big"
 import "core:strings"
 import "core:io"
 import "core:os"
@@ -38,6 +38,7 @@ Interp :: struct {
 		rawptr: ^Type_Info,
 
 		counted_arrays: map[^Type_Info]^Type_Info,
+		pointers: map[^Type_Info]^Type_Info,
 	},
 }
 
@@ -60,8 +61,11 @@ AstStackFrame :: struct {
 	ast_node: ^ast.AstNode,
 	cursor: int,
 	tag: enum{none, invoke, intrinsic_proc, dynproc, data_invoker},
+	data_tag: enum{nil, jumps},
 	data: rawptr,
 	host_data: rawptr,
+	scopeP: bool,
+	lb_start_idx: int,
 	// variant: struct #raw_union {
 	// 	invoke: struct {
 
@@ -199,7 +203,7 @@ make_varinterp :: proc(interp: ^Interp, ast_node: ^ast.AstNode, max_depth: int) 
 }
 
 set_var :: proc(var: ^Var, val: Rt_Any) {
-	assert(val.data != nil)
+	// assert(val.type.tag != .nil)
 	if val.type.tag ==.struct_ && val.type.struct_.name=="" {
 		val.type.struct_.name = var.symbol.name
 	}
@@ -280,6 +284,7 @@ make_interp_from_ast_nodes :: proc(ast_nodes: []ast.AstNode, max_depth: int) -> 
 	reg_intrinsic_ast(interp, "fn", intrinsic_fndecl)
 	reg_intrinsic_ast(interp, "do", intrinsic_doblock)
 	reg_intrinsic_ast(interp, "jumps", intrinsic_jumps)
+	reg_intrinsic_ast(interp, "goto", intrinsic_goto)
 	reg_intrinsic_ast(interp, "if", intrinsic_ifbranch)
 	reg_intrinsic_ast(interp, "let", intrinsic_let)
 	reg_intrinsic_ast(interp, "set", intrinsic_set)
@@ -289,22 +294,37 @@ make_interp_from_ast_nodes :: proc(ast_nodes: []ast.AstNode, max_depth: int) -> 
 	reg_intrinsic_dyn(interp, "tArr", intrinsic_type_counted_array)
 	reg_intrinsic_dyn(interp, "make-arr", intrinsic_make_counted_array)
 	reg_intrinsic_dyn(interp, "+", intrinsic_add)
+	reg_intrinsic_dyn(interp, "mul", intrinsic_multiply)
 	reg_intrinsic_dyn(interp, "<", intrinsic_lt)
+	reg_intrinsic_dyn(interp, "=", intrinsic_equal)
+	reg_intrinsic_dyn(interp, "b-and", intrinsic_bit_and)
+	reg_intrinsic_dyn(interp, "cast", intrinsic_cast)
 	reg_intrinsic_dyn(interp, "bootstrap-register-data-invoker", intrinsic_register_data_invoker)
 	reg_intrinsic_dyn(interp, "bootstrap-foreign-dyncall", intrinsic_foreign_dyncall)
 	reg_intrinsic_dyn(interp, "prn", intrinsic_dbgprn)
 	reg_intrinsic_dyn(interp, "memcopy", intrinsic_memcopy)
+	reg_intrinsic_dyn(interp, "panic!", intrinsic_panic)
+	reg_intrinsic_dyn(interp, "ptr-offset", intrinsic_ptr_offset)
+	reg_intrinsic_dyn(interp, "deref", intrinsic_deref)
 
 	interp.typeinfo_interns.bool = reg_type(interp, "bool")
 	interp.typeinfo_interns.u8 = reg_type(interp, "u8")
 	reg_type(interp, "u16")
 	interp.typeinfo_interns.u32 = reg_type(interp, "u32")
 	interp.typeinfo_interns.u64 = reg_type(interp, "u64")
+	reg_type(interp, "s32")
 	interp.typeinfo_interns.s64 = reg_type(interp, "s64")
 	interp.typeinfo_interns.rawptr = reg_type(interp, "rawptr")
 	init_var(interp, "int", resolve_var_value(interp, "s64"))
 	init_var(interp, "uint", resolve_var_value(interp, "u64"))
+	init_var(interp, "uintptr", resolve_var_value(interp, "u64"))
 
+	{
+		t := new(Type_Info)
+		t.tag = .nilptr
+		a := wrap_data_in_any(nil, t)
+		init_var(interp, "nil", a)
+	}
 	{
 		a := wrap_data_in_any(&typeinfo_of_typeinfo, typeinfo_of_typeinfop)
 		init_var(interp, "Type-Info", a)
@@ -763,11 +783,8 @@ vi_interp_frame :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 		token := ast_node.token
 		// TODO improve
 		_negP := token[0]=='-'
-		int_mag := numbers.int_str_to_mag(u64, u128, token, 10)
-		value : i64 = 0
-		if len(int_mag)>0 {
-			value = cast(i64) int_mag[0]
-		}
+		value, ok := strconv.parse_i64_of_base(token, 10)
+		if !ok {panic("couldn't parse number")}
 		v := new(i64)
 		v^ = value
 		res := wrap_data_in_any(v, vi.unit_interp.typeinfo_interns.s64)
@@ -787,10 +804,22 @@ vi_push_frame :: proc(using vi: ^VarInterp, ast_node: ^ast.AstNode) {
 }
 
 vi_frame_return :: proc(vi: ^VarInterp, result: Rt_Any) {
-	assert(result.data != nil || (result.type != nil && result.type.tag==.pointer))
+	if !(result.data != nil ||
+		(result.type != nil &&
+			(result.type.tag==.pointer ||
+				result.type.tag==.nilptr))) {
+		fmt.println("\nERROR")
+		fmt.println("type:")
+		print_typeinfo(result.type)
+		fmt.println("\nval:")
+		print_rt_any(result)
+		fmt.println()
+		panic("invalid return value for frame")
+	}
 	vi.last_result=result
 	// fmt.println("RET:", result)
 	vi.ast_stack_endx -= 1
+	destroy_frame_scope(vi, &vi.ast_stack[vi.ast_stack_endx])
 }
 
 vi_interp :: proc(using vi: ^VarInterp) {
@@ -882,7 +911,11 @@ IntrinsicAstModeProc :: proc(vi: ^VarInterp, using frame: ^AstStackFrame)
 intrinsic_doblock :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 	children := ast_node.children
 	if len(children)==0 {panic("!!")}
-	if cursor==0 {cursor = 1}
+	if cursor==0 {
+		cursor = 1
+		frame.scopeP = true
+		frame.lb_start_idx = len(vi.lexical_bindings)
+	}
 
 	if cursor < len(children) {
 		child := &children[cursor]
@@ -892,6 +925,20 @@ intrinsic_doblock :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 	}
 
 	vi_frame_return(vi, vi.last_result)
+}
+
+
+// FIXME this does not work; need to have 'let' insert a destructor into
+// the current scope (like 'defer') to remove the bindings
+destroy_frame_scope :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
+	if !frame.scopeP {return}
+	lb_idx := frame.lb_start_idx
+	for {
+		if len(vi.lexical_bindings)>lb_idx {
+			pop(&vi.lexical_bindings)
+			pop(&vi.lexical_binding_syms)
+		} else {break}
+	}
 }
 
 
@@ -908,6 +955,7 @@ intrinsic_jumps :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 	if cursor==0 {
 		bl = new(Intrinsic_Jumps)
 		frame.data = bl
+		frame.data_tag = .jumps
 
 		if len(children)<3 {panic("!!")}
 
@@ -949,11 +997,44 @@ intrinsic_jumps :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 	vi_frame_return(vi, vi.last_result)
 }
 
+intrinsic_goto :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
+	children := ast_node.children
+	if len(children) != 2 {panic("too few children")}
+	jtarget_ast := &children[1]
+	expect_ast_tag(.keyword, jtarget_ast)
+	s := jtarget_ast.token
+	sym := get_interned_symbol(vi.unit_interp, s)
+
+	i := vi.ast_stack_endx
+	for {
+		if i <= 0 {break}
+		i -= 1
+		f := &vi.ast_stack[i]
+
+		destroy_frame_scope(vi, f)
+
+		if f.data_tag==.jumps {
+
+			bl := cast(^Intrinsic_Jumps) f.data
+			assert(bl!=nil)
+			for js, jmp_idx in &bl.jump_syms {
+				if js == sym {
+					// Do the jump
+					vi.ast_stack_endx = i+1
+					vi_push_frame(vi, bl.jump_codes[jmp_idx])
+					return
+				}
+			}
+		}
+	}
+	panic("could not find the jump target")
+}
+
 intrinsic_ifbranch :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 	children := ast_node.children
 
 	if cursor==0 {
-		if len(children)<4 {panic("!!")}
+		if len(children)<3 {panic("!!")}
 
 		vi_push_frame(vi, &children[1])
 		cursor += 1
@@ -970,7 +1051,12 @@ intrinsic_ifbranch :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 		if condition {
 			vi_push_frame(vi, &children[2])
 		} else {
-			vi_push_frame(vi, &children[3])
+			if len(children)>3{
+				vi_push_frame(vi, &children[3])
+			} else {
+				vi_frame_return(vi, rtany_void)
+				return
+			}
 		}
 		cursor += 1
 		return
@@ -981,11 +1067,19 @@ intrinsic_ifbranch :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 
 
 
+Intrinsic_Let :: struct {
+	lb_idx: int,
+}
+
 intrinsic_let :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 	children := ast_node.children
 	if len(children)!=3 {panic("!!")}
 
+	bl := cast(^Intrinsic_Let) frame.data
 	if cursor == 0 {
+		bl := new(Intrinsic_Let)
+		frame.data = bl
+
 		val_ast := &children[2]
 		cursor += 1
 		vi_push_frame(vi, val_ast)
@@ -997,6 +1091,8 @@ intrinsic_let :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 	sym_ast := &children[1]
 	expect_ast_tag(.symbol, sym_ast)
 	sym := get_interned_symbol(vi.unit_interp, sym_ast.token)
+
+	bl.lb_idx = len(vi.lexical_bindings)
 
 	lb : LexicalBinding
 	lb.value = val
@@ -1078,6 +1174,28 @@ intrinsic_set :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 }
 
 
+intrinsic_bit_and :: proc(vi: ^VarInterp, args: []Rt_Any) {
+	if len(args)<2 {panic("too few args")}
+	arg_to_int :: proc(arg: Rt_Any) -> i64 { // @Copypaste
+		if !(arg.type.tag == .integer && arg.type.integer.nbits<=64) {
+			fmt.panicf("invalid type: %v\n", arg.type.tag)
+		}
+		x := cast(^i64) arg.data
+		return x^
+	}
+	acc : i64 = arg_to_int(args[0])
+	for i in 1..<len(args) {
+		x := arg_to_int(args[i])
+		acc &= x
+	}
+
+	v := new(i64)
+	v^ = acc
+	ret := wrap_data_in_any(v, vi.unit_interp.typeinfo_interns.s64)
+	vi_frame_return(vi, ret)
+}
+
+
 intrinsic_add :: proc(vi: ^VarInterp, args: []Rt_Any) {
 	pointer_arithmetic := false
 
@@ -1094,6 +1212,26 @@ intrinsic_add :: proc(vi: ^VarInterp, args: []Rt_Any) {
 			fmt.panicf("invalid type to add: %v\n", arg.type.tag)
 		}
 		sum += x
+	}
+
+	v := new(i64)
+	v^ = sum
+	ret := wrap_data_in_any(v, vi.unit_interp.typeinfo_interns.s64)
+	vi_frame_return(vi, ret)
+}
+
+
+intrinsic_multiply :: proc(vi: ^VarInterp, args: []Rt_Any) {
+	sum : i64 = 1
+	for arg in args {
+		x : i64
+		if arg.type.tag == .integer && arg.type.integer.nbits<=64 {
+			x = (cast(^i64) arg.data)^
+		} else {
+			print_vi_stack(vi)
+			fmt.panicf("invalid type to mul: %v\n", arg.type.tag)
+		}
+		sum *= x
 	}
 
 	v := new(i64)
@@ -1127,6 +1265,95 @@ intrinsic_lt :: proc(vi: ^VarInterp, args: []Rt_Any) {
 	v := new(bool)
 	v^ = result
 	ret := wrap_data_in_any(v, vi.unit_interp.typeinfo_interns.bool)
+	vi_frame_return(vi, ret)
+}
+
+import "core:math"
+
+intrinsic_equal :: proc(vi: ^VarInterp, args: []Rt_Any) {
+	if len(args)<2 {panic("too few args")}
+	
+	prev := args[0]
+	result := true
+	for i in 1..<len(args) {
+		arg := args[i]
+
+		if arg.data==prev.data {continue}
+
+		if arg.type.tag==.integer && prev.type.tag==.integer {
+			eq : bool
+			if arg.type.integer.nbits>64 || prev.type.integer.nbits>64 {
+				panic("too big")
+			}
+			load_x :: proc(x: rawptr, #any_int nbits: int) -> i64 {
+				switch nbits {
+				case 8:
+					return auto_cast (cast(^i8) x)^
+				case 16:
+					return auto_cast (cast(^i16) x)^
+				case 32:
+					return auto_cast (cast(^i32) x)^
+				case 64:
+					return auto_cast (cast(^i64) x)^
+				case: panic("unsupported")
+				}
+			}
+			x1 := load_x(arg.data, arg.type.integer.nbits)
+			x2 := load_x(prev.data, prev.type.integer.nbits)
+			if x1 == x2 {continue}
+			else {
+				result = false
+				break
+			}
+		} else {
+			fmt.println("\nERROR: cannot compare types for equality")
+			print_typeinfo(prev.type)
+			fmt.println()
+			print_typeinfo(arg.type)
+			fmt.println()
+			panic("")
+		}
+	}
+
+	v := new(bool)
+	v^ = result
+	ret := wrap_data_in_any(v, vi.unit_interp.typeinfo_interns.bool)
+	vi_frame_return(vi, ret)
+}
+
+
+intrinsic_cast :: proc(vi: ^VarInterp, args: []Rt_Any) {
+	if len(args)!=2 {panic("bad number of args")}
+
+	type_arg := args[0]
+	val_arg := args[1]
+
+	check_arg_type(type_arg, typeinfo_of_typeinfop)
+
+	target_typeinfo := cast(^Type_Info) type_arg.data
+	ptr_to_val : rawptr
+
+	if target_typeinfo.tag==.pointer && val_arg.type.tag==.pointer {
+		ptr_to_val = &val_arg.data
+	} else if target_typeinfo.tag==.integer && val_arg.type.tag==.integer {
+		ptr_to_val = val_arg.data
+		t1 := target_typeinfo.integer
+		t2 := val_arg.type.integer
+		// if t1.signedP != t2.signedP {
+		// 	panic("cannot convert between unsigned and signed")
+		// }
+		bytes1 := t1.nbits/8
+		bytes2 := t2.nbits/8
+		if bytes1 > bytes2 {
+			m := mem.alloc(auto_cast bytes1)
+			mem.copy(m, ptr_to_val, auto_cast bytes2)
+			ptr_to_val = m
+		}
+	} else {
+		panic("type combination not supported right now")
+	}
+
+	ret := wrap_data_in_any(ptr_to_val, target_typeinfo)
 	vi_frame_return(vi, ret)
 }
 
@@ -1271,6 +1498,12 @@ execute_invoke_dynproc :: proc(interp: ^Interp, dp: ^DynProc, args: []Rt_Any) ->
 				if value.type.tag==.pointer {
 					value = wrap_data_in_any(value.data, value.type.pointer.value_type)
 					continue
+				}
+				if value.type.tag==.nilptr && target_type.tag==.pointer {
+					a : Rt_Any
+					a.type = target_type
+					a.data = nil
+					return a, true
 				}
 
 				return {}, false
@@ -1524,9 +1757,7 @@ typeinfo_of_counted_array :: proc(interp: ^Interp, item_type: ^Type_Info) -> ^Ty
 	ms[0].type = interp.typeinfo_interns.s64
 	ms[1].name = "data"
 	ms[1].byte_offset = 8
-	ms[1].type = new(Type_Info)
-	ms[1].type.tag = .pointer
-	ms[1].type.pointer.value_type = item_type
+	ms[1].type = typeinfo_wrap_pointer(interp, item_type)
 
 	ti : Type_Struct
 	ti.name = "Counted-Array"
@@ -1544,9 +1775,15 @@ typeinfo_wrap_pointer :: proc(interp: ^Interp, value_type: ^Type_Info) -> ^Type_
 	if (value_type == typeinfo_of_typeinfo) {
 		return typeinfo_of_typeinfop
 	}
+	existing, found := interp.typeinfo_interns.pointers[value_type]
+	if found {return existing}
+
 	ret := new(Type_Info)
 	ret.tag = .pointer
 	ret.pointer.value_type = value_type
+
+	interp.typeinfo_interns.pointers[value_type]=ret
+
 	return ret
 }
 
@@ -1594,7 +1831,18 @@ intrinsic_register_data_invoker :: proc(vi: ^VarInterp, args: []Rt_Any) {
 intrinsic_dbgprn :: proc(vi: ^VarInterp, args: []Rt_Any) {
 	fmt.println("\nDBG:")
 	for arg in args {
-		print_rt_any(arg)
+		// fmt.println("- Type:")
+		// print_typeinfo(arg.type)
+		// fmt.println("\n- Value:")
+
+		if arg.type == vi.unit_interp.typeinfo_interns.string {
+			rts := cast(^Rt_String) arg.data
+			s := sq_string_to_odin(rts^)
+			fmt.println("String; count", rts.count)
+			fmt.print(s)
+		} else {
+			print_rt_any(arg)
+		}
 		fmt.println()
 	}
 	fmt.println("END DBG\n")
@@ -1641,6 +1889,17 @@ report_bad_arg_type :: proc(arg: Rt_Any, t: ^Type_Info, idx: int) {
 check_arg_type :: proc(arg: Rt_Any, t: ^Type_Info) {
 	if arg.type != t {
 		report_bad_arg_type(arg, t, -1)
+	}
+}
+
+check_arg_type_tag :: proc(arg: Rt_Any, tag: Type_Info_Tag, loc := #caller_location) {
+	if arg.type.tag != tag {
+		fmt.println("\nBAD ARG TYPE")
+		fmt.println("Expected:", tag)
+		fmt.println("\nGot:")
+		print_typeinfo(arg.type)
+		fmt.println()
+		panic(message="bad arg type", loc=loc)
 	}
 }
 
@@ -1758,6 +2017,7 @@ intrinsic_foreign_dyncall :: proc(vi: ^VarInterp, args: []Rt_Any) {
 				panic("int too big")
 			}
 		case .pointer: c_type=.pointer
+		case .nilptr: c_type=.pointer
 		case:
 			fmt.printf("unsupported type: %v\n", ti.tag)
 			print_typeinfo(ti)
@@ -1767,16 +2027,20 @@ intrinsic_foreign_dyncall :: proc(vi: ^VarInterp, args: []Rt_Any) {
 		return
 	}
 
+	fmt.println("Foreign call:", proc_name)
+
 	// load arguments
 	for arg_val, i in call_args {
 		ti := arg_val.type
+		// FIXME we should not be using runtime values for determining types
 		c_type := typeinfo_to_c_type(ti)
 		arg : u64
-		if arg_val.type.tag==.pointer{
+		if arg_val.type.tag==.pointer || arg_val.type.tag==.nilptr{
 			arg = cast(u64) cast(uintptr) arg_val.data
 		} else {
 			arg = (cast(^u64) arg_val.data)^
 		}
+		fmt.println("loading arg type:", c_type)
 		switch c_type {
 			case .void:
 				print_vi_stack(vi)
@@ -1807,7 +2071,9 @@ intrinsic_foreign_dyncall :: proc(vi: ^VarInterp, args: []Rt_Any) {
 	}
 
 	v := new(u64)
-	switch typeinfo_to_c_type(ret_typeinfo) {
+	ret_c_type := typeinfo_to_c_type(ret_typeinfo)
+	fmt.println("calling type:", ret_c_type)
+	switch ret_c_type {
 	case .void:
 		dc.CallVoid(dcvm, proc_ptr)
 	case .bool:
@@ -1844,4 +2110,50 @@ intrinsic_foreign_dyncall :: proc(vi: ^VarInterp, args: []Rt_Any) {
 	r^ = ret
 	r2 := wrap_data_in_any(r, typeinfo_of_any)
 	vi_frame_return(vi, r2)
+}
+
+
+intrinsic_panic :: proc(vi: ^VarInterp, args: []Rt_Any) {
+	msg : string
+	if len(args)>=1 {
+		arg := args[0]
+		if arg.type==vi.unit_interp.typeinfo_interns.string {
+			rts := cast(^Rt_String) arg.data
+			msg = sq_string_to_odin(rts^)
+		}
+	}
+
+	fmt.println()
+	fmt.println("PANIC:", msg)
+	panic("User panic")
+}
+
+
+intrinsic_ptr_offset :: proc(vi: ^VarInterp, args: []Rt_Any) {
+	ptr_arg := args[0]
+	offset_arg := args[1]
+
+	check_arg_type_tag(ptr_arg, .pointer)
+	check_arg_type_tag(offset_arg, .integer)
+
+	ptr := ptr_arg.data
+	offset := (cast(^int) offset_arg.data)^
+
+	item_size := type_byte_size(ptr_arg.type.pointer.value_type)
+	ptr2 := mem.ptr_offset(cast(^u8) ptr, offset*item_size)
+
+	ret := wrap_data_in_any(&ptr2, ptr_arg.type)
+	// print_rt_any(ret)
+	vi_frame_return(vi, ret)
+}
+
+intrinsic_deref :: proc(vi: ^VarInterp, args: []Rt_Any) {
+	ptr_arg := args[0]
+	check_arg_type_tag(ptr_arg, .pointer)
+	ptr := ptr_arg.data
+
+	val_type := ptr_arg.type.pointer.value_type
+
+	ret := wrap_data_in_any(ptr, val_type)
+	vi_frame_return(vi, ret)
 }

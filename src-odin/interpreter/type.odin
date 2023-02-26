@@ -4,16 +4,21 @@ import "core:mem"
 import "core:fmt"
 
 
+Type_Info_Tag :: enum {
+	nil, // invalid value
+	void, pointer,
+	bool, integer, float,
+	// procedure,
+	static_array, struct_, enum_,
+	// any,
+	intrinsic,
+
+	// untyped
+	nilptr,
+}
+
 Type_Info :: struct {
-	tag: enum {
-		nil,
-		void, pointer,
-		bool, integer, float,
-		// procedure,
-		static_array, struct_, enum_,
-		// any,
-		intrinsic,
-	},
+	tag: Type_Info_Tag,
 	using alt: struct {
 		integer: Type_Integer,
 		float: Type_Float,
@@ -115,6 +120,7 @@ type_byte_size :: proc(info: ^Type_Info) -> int {
 		item_size := type_byte_size(info.static_array.item_type)
 		return item_size * auto_cast info.static_array.count
 	case .enum_: return type_byte_size(info.enum_.backing_type)
+	case .nilptr: panic("!!")
 	case .nil: panic("!!")
 	case .intrinsic: fallthrough
 	case:
@@ -294,6 +300,8 @@ print_rt_any :: proc(val: Rt_Any, indent_level := 0) {
 		print_rt_any({type=info.enum_.backing_type, data=val.data})
 	case .intrinsic:
 		fmt.print("<intrinsic>")
+	case .nilptr:
+		fmt.print("nilptr")
 	case .nil: panic("!!")
 	}
 }
@@ -427,6 +435,8 @@ print_typeinfo :: proc(info: ^Type_Info, indent_level := 0) {
 		print_indent(level)
 		print_typeinfo(info.enum_.backing_type, level)
 		fmt.print(" )")
+	case .nilptr:
+		fmt.print("nilptr")
 	case .nil: panic("!! nil type tag")
 	case .intrinsic: fallthrough
 	case:

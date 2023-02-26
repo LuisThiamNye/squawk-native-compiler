@@ -22,7 +22,7 @@
 ;     (data rawptr)))
 
 
-
+(def win-max-path 260)
 
 (def Foreign-Lib
   (struct
@@ -125,12 +125,100 @@
 
 
 
+(def Wstring *u16)
 
 (def Kernel32 (foreign-library "Kernel32.dll"))
 
+(def Win-Handle uintptr)
+
 ; (def GetLastError (foreign-proc [] u32 "GetLastError" Kernel32))
 (def GetProcessHeap (foreign-proc [] rawptr "GetProcessHeap" Kernel32))
-(def HeapAlloc (foreign-proc [[:heap rawptr] [:flags u32] [:nbytes uint]] rawptr "HeapAlloc" Kernel32))
+(def HeapAlloc
+  (foreign-proc [[:heap rawptr] [:flags u32] [:nbytes uint]]
+    rawptr "HeapAlloc" Kernel32))
+(def FindFirstFile
+  (foreign-proc [[:file-name Wstring] [:find-data *Win32-Find-Data]]
+    Win-Handle "FindFirstFileW" Kernel32))
+(def MultiByteToWideChar
+  (foreign-proc [[:code-page u32] [:flags u32]
+                 [:multi-byte-str *u8] [:multi-byte-count s32]
+                 [:wide-char-str Wstring] [:wide-char-count s32]]
+    s32 "MultiByteToWideChar" Kernel32))
+(def WideCharToMultiByte
+  (foreign-proc [[:code-page u32] [:flags u32]
+                 [:wide-char-str Wstring] [:wide-char-count s32]
+                 [:multi-byte-str *u8] [:multi-byte-count s32]
+                 [:default-char *u8] [:used-default-char *bool]]
+    s32 "WideCharToMultiByte" Kernel32))
+
+(def str->wstr
+  (fn [(input String)] -> Wstring
+    (do
+      (let CP_UTF8 (cast u32 65001))
+      (let wcount
+        (MultiByteToWideChar
+          CP_UTF8 (cast u32 0)
+          input/data (cast s32 input/count)
+          nil (cast s32)))
+      ;; TODO do something if wcount=0 (failed to convert)
+      (let wstr (cast Wstring (allocate (mul wcount 2))))
+      (MultiByteToWideChar
+        CP_UTF8 (cast u32 0)
+        input/data (cast s32 input/count)
+        wstr wcount)
+      wstr)))
+
+(def str->path-wstr
+  (fn [(input String)] -> Wstring
+    (do
+      (let CP_UTF8 (cast u32 65001))
+      (let wcount win-max-path)
+      (if (= 0 wcount)
+        (panic! "failed to convert"))
+      (let wstr (cast Wstring (allocate (mul wcount 2))))
+      (MultiByteToWideChar
+        CP_UTF8 (cast u32 0)
+        input/data (cast s32 input/count)
+        wstr (cast s32 wcount))
+      wstr)))
+
+(def prn-wstr
+  (fn [(input Wstring)]
+    (do
+      (let i' (new int))
+      (jumps :loop
+        (do
+          (let i (deref i'))
+          (let c (deref (ptr-offset input i)))
+          (prn c)
+          (set i' (+ 1 i))
+          (if (= c 0)
+            nil
+            (goto :loop)))))))
+
+(def wstr->str
+  (fn [(input Wstring) (length int)] -> String
+    (do
+      (let CP_UTF8 (cast u32 65001))
+      (let bcount
+        (WideCharToMultiByte
+          CP_UTF8 (cast u32 0)
+          input (cast s32 length)
+          nil (cast s32 0)
+          nil nil))
+      (if (= 0 bcount)
+        (panic! "failed to convert"))
+      (let bstr' (new String))
+      (set bstr'/count (cast s64 bcount))
+      (set bstr'/data (cast *u8 (allocate (cast s64 bcount))))
+      ; (prn (deref bstr'))
+      ; (prn bstr')
+      (WideCharToMultiByte
+        CP_UTF8 (cast u32 0)
+        input (cast s32 length)
+        (deref bstr'/data) bcount
+        nil nil)
+      bstr')))
 
 
 ;; FIXME: does not work because returns a typeinfo of
@@ -141,7 +229,7 @@
   (fn [(nbytes int)] -> (memory rawptr)
     (do
       (let HEAP_ZERO_MEMORY 8)
-      (HeapAlloc (GetProcessHeap) 0 nbytes))))
+      (HeapAlloc (GetProcessHeap) HEAP_ZERO_MEMORY nbytes))))
 
 (def cstring
   (fn [(s String)] -> rawptr
@@ -195,33 +283,30 @@
       (allocate nbytes))))
 
 
-(def test
-  (fn [(fp Decl-Foreign-Proc)]
-    (do
-      (prn fp/ret-typeinfo))))
-
-(def test2
-  (fn [(s String)]
-    (do
-      (prn s/data))))
-
 (def main
   (do
     (bootstrap-register-data-invoker Decl-Foreign-Proc
       invoke-foreign-proc)
-    ; (let x "hello")
-    ; (prn x/data)
-    ; (test2 "hello")
-    #_(do
-      (let r (new Decl-Foreign-Proc))
-      (set r/name "hello")
-      (set r/ret-typeinfo u64)
-      
-      (prn r/ret-typeinfo)
-      (test r))
-    ; #_
     (fn []
       (do
-        (let dir (cstring ".\\*"))
-        (let file-data (new Win32-Find-Data))
-        dir))))
+        (let dir ".\*")
+        (let file-data' (new Win32-Find-Data))
+        (let dir-w (str->path-wstr dir))
+        
+        ; (prn-wstr dir-w)
+        ; (prn (wstr->str dir-w win-max-path))
+
+        (let INVALID_HANDLE_VALUE -1)
+        (let finder (FindFirstFile dir-w file-data'))
+        (if (= INVALID_HANDLE_VALUE finder)
+          (panic! "failed to FindFirstFile"))
+        
+        (let file-data (deref file-data'))
+        (let FILE_ATTRIBUTE_DIRECTORY 16 #_0x00000010)
+        (if (< 0 (b-and FILE_ATTRIBUTE_DIRECTORY file-data/file-attributes))
+          (panic! "dir")
+          (do
+            (let name (wstr->str (cast *u16 file-data'/file-name) win-max-path))
+            (prn name)))
+        
+        (panic! "ok")))))
