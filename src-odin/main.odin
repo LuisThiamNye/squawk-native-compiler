@@ -11,7 +11,7 @@ import dc "dyncall"
 import win "core:sys/windows"
 
 main :: proc() {
-	win.timeBeginPeriod(1) // better context switching?
+	win.timeBeginPeriod(1) // higher resolution timings
 
 	win.AddVectoredExceptionHandler(1, exception_handler)
 
@@ -38,8 +38,8 @@ main :: proc() {
 	// m^=99999
 	// fmt.println(m^)
 
-	// vis.main()
-	vis.compile_sample()
+	vis.main()
+	// vis.compile_sample()
 
 	fmt.println("Done.")
 }
@@ -62,7 +62,7 @@ exception_handler :: proc "stdcall" (exinfo: ^win.EXCEPTION_POINTERS) -> win.LON
 		case EXCEPTION_ACCESS_VIOLATION:
 			rw := cast(uintptr) er.ExceptionInformation[0]
 			addr := er.ExceptionInformation[1]
-			
+
 			fmt.println("access violation:")
 			switch rw {
 			case 0:

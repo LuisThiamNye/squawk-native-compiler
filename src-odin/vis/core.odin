@@ -1,21 +1,30 @@
 package vis
 
 import "core:fmt"
-import "core:runtime"
 import "core:mem"
+import "core:runtime"
 
 import c_ "core:c"
 import win "core:sys/windows"
 
 import sk "../skia"
 
+Rect :: struct #raw_union {
+	using ltrb: sk.SkRect,
+	coords: [4]f32,
+}
+
 println :: fmt.println
 
 // TODO - control frame rate properly (SetTimer ?)
 
+Vec_int :: struct {x: int, y: int}
+
 Graphics :: struct {
 	width: i32,
 	height: i32,
+	mouse_pos: Vec_int,
+	mouse_cursor: Sys_Mouse_Cursor_Type,
 
 	bm_size: int,
 	bitmap_info: ^win.BITMAPINFO,
@@ -47,7 +56,29 @@ Event :: struct {
 }
 
 Event_Key :: struct {
-	key: int,
+	key: Key,
+}
+
+Event_Mousebutton_Key :: enum {
+	lbutton,
+	rbutton,
+	shift,
+	control,
+	mbutton,
+	xbutton1,
+	xbutton2,
+}
+
+Event_Mousebutton_Keyset :: bit_set[Event_Mousebutton_Key]
+
+get_keyboard_state :: proc() -> [256]u8 {
+	ks : [256]u8
+	win.GetKeyboardState(auto_cast &ks)
+	return ks
+}
+
+keyboard_key_pressed :: proc(kbd: [256]u8, key: Key) -> bool{
+	return (kbd[key] & (1<<7))>0
 }
 
 resize_buffer :: proc(using self: ^Graphics, new_width: i32, new_height: i32) {
@@ -97,21 +128,36 @@ request_frame :: proc(window: ^Window) {
 	InvalidateRect(window.latest_hwnd, nil, false)
 }
 
+set_cursor :: proc(cursor: Sys_Mouse_Cursor_Type) {
+	c : cstring
+	switch cursor {
+	case .arrow:
+		c = win.IDC_ARROW
+	case .ibeam:
+		c = win.IDC_IBEAM
+	case: panic("invalid")
+	}
+	hc := win.LoadCursorW(nil, auto_cast cast(rawptr) c)
+	win.SetCursor(hc)
+}
+
 handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 	wparam: win.WPARAM, lparam: win.LPARAM) -> win.LRESULT {
 	context = runtime.default_context()
 	using win
 	window := cast(^Window) GetPropW(hwnd, utf8_to_wstring("SQ"))
 	if window == nil { // init window
-		graphics := Graphics{}
+		graphics : Graphics
 	    rect: RECT
 		GetClientRect(hwnd, &rect)
 	    resize_buffer(&graphics, rect.right-rect.left, rect.bottom-rect.top)
 
+	    // Init window state
 	    window = new(Window)
-	    window^ = {graphics=graphics, app=new(AppState)}
-	    SetPropW(hwnd, utf8_to_wstring("SQ"), auto_cast window)
+	    window.graphics = graphics
+	    window.app = new(AppState)
 
+	    SetPropW(hwnd, utf8_to_wstring("SQ"), auto_cast window)
 	    the_only_window = window
 
 	    window.graphics.scale = get_window_scale(hwnd)
@@ -121,6 +167,13 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 	using window
 
 	switch msg {
+	case WM_SETCURSOR:
+		cursor_area := lparam & 0xFFFF
+		if HTCLIENT==cursor_area {
+			set_cursor(graphics.mouse_cursor)
+
+			return 1
+		}
 	case WM_TIMER:
 		// return 0
 		break
@@ -198,22 +251,96 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 		// InvalidateRect(hwnd, nil, false)
 		return 0
 	case WM_MOUSEMOVE:
-		break
+		// MK_CONTROL :: 0x0008
+		// MK_LBUTTON :: 0x0001
+		// MK_MBUTTON :: 0x0010
+		// MK_RBUTTON :: 0x0002
+		// MK_SHIFT :: 0x0004
+		// MK_XBUTTON1 :: 0x0020
+		// MK_XBUTTON2 :: 0x0040
+		// keys_down := wparam
+		x := cast(int) cast(i16) lparam
+		y := lparam >> 16
+		graphics.mouse_pos = {x=x, y=y}
+
+		handled := event_mouse_pos(window, x, y)
+		if handled {InvalidateRect(hwnd, nil, false)}
+		return cast(int) !handled
+	case WM_MOUSELEAVE:
+		fmt.println("WE HAVE LEFT")
 	case WM_MOUSEWHEEL:
 		break
-    case WM_LBUTTONDOWN:
-    case WM_RBUTTONDOWN:
-    case WM_MBUTTONDOWN:
+    case WM_LBUTTONDOWN: fallthrough
+    case WM_RBUTTONDOWN: fallthrough
+    case WM_MBUTTONDOWN: fallthrough
     case WM_XBUTTONDOWN:
-    case WM_LBUTTONUP:
-    case WM_RBUTTONUP:
-    case WM_MBUTTONUP:
+    	key : Key
+    	switch msg {
+    	case WM_LBUTTONDOWN:
+    		key = .lbutton
+	    case WM_RBUTTONDOWN:
+    		key = .rbutton
+	    case WM_MBUTTONDOWN:
+    		key = .middle_button
+	    case WM_XBUTTONDOWN:
+    		if wparam>>16==1 {
+    			key = .x1_button
+    		} else {
+    			key = .x2_button
+    		}
+    	}
+    	x := cast(int) cast(i16) lparam
+		y := lparam >> 16
+		graphics.mouse_pos = {x=x, y=y}
+
+    	handled := event_mousedown(window, key)
+		if handled {InvalidateRect(hwnd, nil, false)}
+		set_cursor(graphics.mouse_cursor)
+
+		SetCapture(hwnd) // listen for mouse events outside the window
+
+		return cast(int) !handled
+    case WM_LBUTTONUP: fallthrough
+    case WM_RBUTTONUP: fallthrough
+    case WM_MBUTTONUP: fallthrough
     case WM_XBUTTONUP:
-    	break
+    	key : Key
+    	switch msg {
+	    case WM_LBUTTONUP:
+    		key = .lbutton
+	    case WM_RBUTTONUP:
+    		key = .lbutton
+	    case WM_MBUTTONUP:
+    		key = .middle_button
+	    case WM_XBUTTONUP:
+    		if wparam>>16==1 {
+    			key = .x1_button
+    		} else {
+    			key = .x2_button
+    		}
+    	}
+    	x := cast(int) cast(i16) lparam
+		y := lparam >> 16
+		graphics.mouse_pos = {x=x, y=y}
+
+    	handled := event_mouseup(window, key)
+		if handled {InvalidateRect(hwnd, nil, false)}
+		set_cursor(graphics.mouse_cursor)
+
+		keys_down := transmute(Event_Mousebutton_Keyset) cast(u8) (wparam & 0xFFFF)
+		mouse_buttons : Event_Mousebutton_Keyset
+		mouse_buttons = {.lbutton, .rbutton, .mbutton, .xbutton1, .xbutton2}
+		if (keys_down & mouse_buttons)=={} {
+			// all mouse buttons are unpressed => stop capturing
+			ReleaseCapture()
+		}
+
+		return cast(int) !handled
 	case WM_SYSKEYDOWN: fallthrough
 	case WM_KEYDOWN:
-		// event_keydown(window, {key=auto_cast wparam})
-		break
+		handled := event_keydown(window, {key=auto_cast wparam})
+		if handled {InvalidateRect(hwnd, nil, false)}
+		return cast(int) !handled
 	case WM_KEYUP:
 		break
 	case WM_CHAR:
@@ -224,6 +351,7 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 		charcode := cast(int) wparam
 		nrepeats := mask_nrepeats & lparam
 		event_charinput(window, charcode)
+		InvalidateRect(hwnd, nil, false)
 		return 0
 	case WM_SETFOCUS:
 		break
@@ -285,7 +413,7 @@ main :: proc() {
     ShowWindow(hwnd, SW_RESTORE)
 
     // DEV
-    compile_sample()
+    // compile_sample()
 
     msg: MSG
     for {
@@ -357,6 +485,7 @@ AppState :: struct {
 	initialised: bool,
 	code_editor: ^CodeEditor,
 	inspector: InspectorState,
+	textbox: Ui_Textbox,
 }	
 
 sk_rect :: proc(l: $L, t: $T, r: $R, b: $B) -> sk.SkRect {
@@ -374,6 +503,9 @@ make_paint :: proc() -> sk.SkPaint {
 draw_ui_root :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	using sk, window, graphics
 
+	// free at start of frame so that data is available for event handling
+	mem.free_all(context.temp_allocator)
+
 	if !app.initialised {
 		app.initialised = true
 		app.code_editor = new(CodeEditor)
@@ -382,9 +514,47 @@ draw_ui_root :: proc(window: ^Window, cnv: sk.SkCanvas) {
 
 	canvas_clear(cnv, 0xFFffffff)
 
-	draw_inspector(window, cnv, &window.app.inspector)
+	// draw_inspector(window, cnv, &window.app.inspector)
+	// draw_codeeditor(window, cnv)
 
-	mem.free_all(context.temp_allocator)
+
+	using window.app
+	textbox.font_size = 15*scale
+	// uses temp allocator
+	textbox.font = get_default_font(window, textbox.font_size)
+	if !window.app.textbox.init {
+		textbox.border_colour = {200,200,200,255}
+		textbox.text_colour = {50,44,40,255}
+	}
+	draw_textbox(&window.app.textbox, cnv, window.graphics.scale)
+}
+
+event_keydown :: proc(window: ^Window, using evt: Event_Key) -> bool {
+	// fmt.println(evt)
+	return textbox_event_keydown(&window.graphics, &window.app.textbox, evt)
+}
+
+event_charinput :: proc(window: ^Window, ch: int) {
+	// fmt.println("Char", ch)
+	textbox_event_charinput(&window.app.textbox, ch)
+}
+
+event_mousedown :: proc(window: ^Window, key: Key) -> bool {
+	return textbox_event_mousedown(&window.graphics, &window.app.textbox, key)
+}
+
+event_mouseup :: proc(window: ^Window, key: Key) -> bool {
+	return textbox_event_mouseup(&window.graphics, &window.app.textbox, key)
+}
+
+event_mouse_pos :: proc(window: ^Window, x: int, y: int) -> bool {
+	handled := textbox_event_mouse_pos(&window.graphics, &window.app.textbox, x, y)
+	return handled
+}
+
+Sys_Mouse_Cursor_Type :: enum {
+	arrow,
+	ibeam,
 }
 
 get_default_font :: proc(window: ^Window, font_size: $S) -> sk.SkFont {
@@ -406,6 +576,51 @@ make_textblob_from_text :: proc(text: string, font: sk.SkFont) -> sk.SkTextBlob 
 	blob := textblob_make_from_text(glyphs, auto_cast nglyphs*size_of(SkGlyphID),
 		font, SkTextEncoding.GlyphID)
 	return blob
+}
+
+CF_UNICODETEXT :: 13
+
+clipboard_set_text :: proc(text: string) -> bool {
+	using win
+	OpenClipboard(nil) or_return
+	defer CloseClipboard()
+
+	wstr := utf8_to_utf16(text)
+	nbytes := len(wstr)*size_of(u16)
+
+	GMEM_MOVEABLE :: 2
+	h_data := GlobalAlloc(GMEM_MOVEABLE, auto_cast nbytes+size_of(u16))
+	if h_data==nil {return false}
+	{
+		data := GlobalLock(h_data)
+		defer GlobalUnlock(h_data)
+		mem.copy(data, raw_data(wstr), nbytes)
+	}
+	res_data := SetClipboardData(CF_UNICODETEXT, auto_cast h_data)
+	if res_data==nil {return false}
+	return true
+}
+
+clipboard_get_text :: proc() -> (out: string, ok: bool) {
+	using win
+
+	OpenClipboard(nil) or_return
+	defer CloseClipboard()
+
+	IsClipboardFormatAvailable(CF_UNICODETEXT) or_return
+
+	handle := cast(HGLOBAL) GetClipboardData(CF_UNICODETEXT)
+	if handle==nil {return}
+
+	data := cast([^]u16) GlobalLock(handle)
+	if data==nil {return}
+	defer GlobalUnlock(handle)
+
+	out_, err := wstring_to_utf8(data, -1)
+	if err!=.None {return}
+	out = out_
+	ok = true
+	return
 }
 
 draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
@@ -455,11 +670,7 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	}
 }
 
-event_keydown :: proc(window: ^Window, using evt: Event_Key) {
-	fmt.println(evt)
-}
-
-event_charinput :: proc(window: ^Window, ch: int) {
+codeeditor_event_charinput :: proc(window: ^Window, ch: int) {
 	code_editor := window.app.code_editor
 	using code_editor
 	for region in regions {

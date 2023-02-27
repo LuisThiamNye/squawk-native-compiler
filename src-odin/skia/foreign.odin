@@ -53,7 +53,30 @@ SkFontStyle_Width :: struct{normal:i32}{normal=5}
 
 SkGlyphID :: c_.uint16_t
 
-SkFontMetrics :: struct {}
+SkFontMetrics :: struct {
+	flags: bit_set[enum {
+		underline_thickness_is_valid,
+		underline_position_is_valid,
+		strikeout_thickness_is_valid,
+		strikeout_position_is_valid,
+		bounds_invalid,
+	}; u32],
+    top: SkScalar,
+    ascent: SkScalar,
+    descent: SkScalar,
+    bottom: SkScalar,
+    leading: SkScalar,
+    avg_char_width: SkScalar,
+    max_char_width: SkScalar,
+    x_min: SkScalar,
+    x_max: SkScalar,
+    x_height: SkScalar,
+    cap_height: SkScalar,
+    underline_thickness: SkScalar,
+    underline_position: SkScalar,
+    strikeout_thickness: SkScalar,
+    strikeout_position: SkScalar,
+}
 
 @(default_calling_convention="c", link_prefix="sk_")
 foreign sklib {
@@ -72,23 +95,30 @@ foreign sklib {
 	canvas_scale :: proc(SkCanvas, c_.float, c_.float) ---
 	canvas_translate :: proc(SkCanvas, c_.float, c_.float) ---
 	canvas_rotate :: proc(SkCanvas, c_.float) ---
+	canvas_clip_rect :: proc(cnv: SkCanvas, rect: ^SkRect, anti_alias: bool = false) ---
 
 	// paint_new :: proc() -> SkPaint ---
 	paint_init :: proc(SkPaint) -> SkPaint ---
 	paint_deinit :: proc(SkPaint) ---
 	paint_set_colour :: proc(SkPaint, SkColor) ---
+	paint_set_stroke :: proc(SkPaint, bool) ---
+	paint_set_stroke_width :: proc(SkPaint, SkScalar) ---
 
 	imageinfo_init :: proc(SkImageInfo) -> SkImageInfo ---
 	imageinfo_deinit :: proc(SkImageInfo) ---
 	imageinfo_make :: proc(c_.int, c_.int, SkColorType, SkAlphaType, SkColorSpace) -> SkImageInfo ---
+
 	surface_make_raster_direct :: proc(^SkImageInfo, rawptr, c_.size_t, SkSurfaceProps) -> SkSurface ---
 
-	font_init :: proc(SkFont, SkTypeface, SkScalar) -> SkFont ---
 	textblob_make_from_text :: proc(rawptr, c_.size_t, SkFont, SkTextEncoding) -> SkTextBlob ---
+
 	typeface_make_default :: proc() -> SkTypeface ---
 	typeface_make_from_name :: proc(rawptr, SkFontStyle) -> SkTypeface ---
 
 	fontstyle_init :: proc(^SkFontStyle, c_.int, c_.int, SkFontStyle_Slant) -> ^SkFontStyle ---
+
+	font_init :: proc(SkFont, SkTypeface, SkScalar) -> SkFont ---
 	font_text_to_glyphs :: proc(font: SkFont, text: rawptr, nbytes: c_.size_t, encoding: SkTextEncoding, glyphs: [^]SkGlyphID, max_glyphs: c_.int) -> c_.int ---
 	font_get_metrics :: proc(SkFont, ^SkFontMetrics) -> SkScalar ---
+	font_measure_text :: proc(font: SkFont, text: rawptr, nbytes: c_.size_t, encoding: SkTextEncoding, bounds: ^SkRect = nil, paint: ^SkPaint = nil) -> SkScalar ---
 }

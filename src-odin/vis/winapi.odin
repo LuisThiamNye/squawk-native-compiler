@@ -9,6 +9,16 @@ foreign import shcore "system:Shcore.lib"
 foreign user32 {
 	GetPropW :: proc(win.HWND, win.LPCWSTR) -> win.HANDLE ---
 	SetPropW :: proc(win.HWND, win.LPCWSTR, win.HANDLE) ---
+
+  OpenClipboard :: proc(win.HWND) -> bool ---
+  CloseClipboard :: proc() -> bool ---
+  SetClipboardData :: proc(format: win.UINT, mem: win.HANDLE) -> win.HANDLE ---
+  IsClipboardFormatAvailable :: proc(format: win.UINT) -> bool ---
+  GetClipboardData :: proc(format: win.UINT) -> win.HANDLE ---
+
+  GlobalAlloc :: proc(flags: win.UINT, bytes: win.SIZE_T) -> win.HGLOBAL ---
+  GlobalLock :: proc(memory: win.HGLOBAL) -> rawptr ---
+  GlobalUnlock :: proc(memory: win.HGLOBAL) -> bool ---
 }
 foreign shcore {
 	GetScaleFactorForMonitor :: proc(win.HMONITOR, ^DEVICE_SCALE_FACTOR) ---

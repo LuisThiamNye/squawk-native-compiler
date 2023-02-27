@@ -21,6 +21,7 @@
   (get-mode [> Paint/Mode] getStyle)
   (set-mode [Paint/Mode] setStyle)
   (set-stroke [bool])
+  (set-stroke-width [Scalar])
   (get-colour [> Colour] getColor)
   (get-colour4f [> Colour4f] getColor4f)
   (set-colour [Colour] setColor)
@@ -67,7 +68,8 @@
 (class Font
   #_(:init [])
   (text-to-glyphs [*void size_t SkTextEncoding *SkGlyphID int > int])
-  (get-metrics [*SkFontMetrics > Scalar]))
+  (get-metrics [*SkFontMetrics > Scalar])
+  (measure-text [*void size_t SkTextEncoding *SkRect *SkPaint > Scalar]))
 
 #_(class TextBlob
   :static
