@@ -21,7 +21,7 @@ Ui_Textbox :: struct {
 	drag_level: enum {none, char, word, line},
 	scroll_x: int,
 	prev_click_ns: i64,
-	prev_click_pos: Vec_int,
+	prev_click_pos: [2]int,
 	prev_click_offset: int,
 
 	event_flags: bit_set[enum {scroll_in_cursor}],
@@ -164,7 +164,12 @@ draw_textbox :: proc(using box: ^Ui_Textbox, cnv: sk.SkCanvas, scale: f32) {
 
 }
 
-measure_text_width :: proc(font: sk.SkFont, text: []u8) -> f32 {
+measure_text_width :: proc{measure_text_width_slice, measure_text_width_string}
+measure_text_width_slice :: proc(font: sk.SkFont, text: []u8) -> f32 {
+	return measure_text_width_string(font, string(text))
+
+}
+measure_text_width_string :: proc(font: sk.SkFont, text: string) -> f32 {
 	using sk
 	return font_measure_text(font, raw_data(text), auto_cast len(text), SkTextEncoding.UTF8)
 }
@@ -258,9 +263,9 @@ textbox_event_mouse_pos :: proc(graphics: ^Graphics, using box: ^Ui_Textbox, x: 
 }
 
 textbox_event_mouseup :: proc(graphics: ^Graphics, using box: ^Ui_Textbox, key: Key) -> bool {
-	using graphics.mouse_pos
+	mouse_pos := graphics.mouse_pos
 	drag_level = .none
-	if rect_contains(rect, x, y) {
+	if rect_contains(rect, mouse_pos.x, mouse_pos.y) {
 		graphics.mouse_cursor=.ibeam
 	} else {
 		graphics.mouse_cursor=.arrow
@@ -271,8 +276,8 @@ textbox_event_mouseup :: proc(graphics: ^Graphics, using box: ^Ui_Textbox, key: 
 import "core:time"
 
 textbox_event_mousedown :: proc(graphics: ^Graphics, using box: ^Ui_Textbox, key: Key) -> bool {
-	using graphics.mouse_pos
-	if rect_contains(rect, x, y) {
+	mouse_pos := graphics.mouse_pos
+	if rect_contains(rect, mouse_pos.x, mouse_pos.y) {
 		#partial switch key {
 		case .lbutton:
 			current_ns := time.to_unix_nanoseconds(time.now())
@@ -293,7 +298,7 @@ textbox_event_mousedown :: proc(graphics: ^Graphics, using box: ^Ui_Textbox, key
 					drag_level = .line
 				}
 			} else {
-				coord := cast(f32) x - text_left_coord
+				coord := cast(f32) mouse_pos.x - text_left_coord
 				offset := get_offset_at_coord(font, text[:], coord)
 				cursor.tuple = {offset, offset}	
 				drag_level = .char
@@ -308,26 +313,32 @@ textbox_event_mousedown :: proc(graphics: ^Graphics, using box: ^Ui_Textbox, key
 	}
 }
 
-textbox_event_keydown :: proc(graphics: ^Graphics, using box: ^Ui_Textbox, using evt: Event_Key) -> bool {
-	handled := true
-	prev_cursor := cursor
+Modifier :: enum {
+	shift,
+	control,
+	alt,
+}
+Modifier_Set :: bit_set[Modifier]
 
+get_kbd_modifiers :: proc() -> Modifier_Set {
 	kbd := get_keyboard_state()
 
-	Modifier :: enum {
-		shift,
-		control,
-		alt,
-	}
-	Mods :: bit_set[Modifier]
-
-	mods : Mods
+	mods : Modifier_Set
 	if keyboard_key_pressed(kbd, Key.control) {
 		mods += {.control}
 	}
 	if keyboard_key_pressed(kbd, Key.shift) {
 		mods += {.shift}
 	}
+
+	return mods
+} 
+
+textbox_event_keydown :: proc(graphics: ^Graphics, using box: ^Ui_Textbox, using evt: Event_Key) -> bool {
+	handled := true
+	prev_cursor := cursor
+
+	mods := get_kbd_modifiers()
 
 	// Control
 	if mods=={.control} {

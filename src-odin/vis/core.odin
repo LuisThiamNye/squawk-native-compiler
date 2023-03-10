@@ -18,12 +18,10 @@ println :: fmt.println
 
 // TODO - control frame rate properly (SetTimer ?)
 
-Vec_int :: struct {x: int, y: int}
-
 Graphics :: struct {
 	width: i32,
 	height: i32,
-	mouse_pos: Vec_int,
+	mouse_pos: [2]int,
 	mouse_cursor: Sys_Mouse_Cursor_Type,
 
 	bm_size: int,
@@ -261,7 +259,7 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 		// keys_down := wparam
 		x := cast(int) cast(i16) lparam
 		y := lparam >> 16
-		graphics.mouse_pos = {x=x, y=y}
+		graphics.mouse_pos = {x, y}
 
 		handled := event_mouse_pos(window, x, y)
 		if handled {InvalidateRect(hwnd, nil, false)}
@@ -291,7 +289,7 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
     	}
     	x := cast(int) cast(i16) lparam
 		y := lparam >> 16
-		graphics.mouse_pos = {x=x, y=y}
+		graphics.mouse_pos = {x, y}
 
     	handled := event_mousedown(window, key)
 		if handled {InvalidateRect(hwnd, nil, false)}
@@ -321,7 +319,7 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
     	}
     	x := cast(int) cast(i16) lparam
 		y := lparam >> 16
-		graphics.mouse_pos = {x=x, y=y}
+		graphics.mouse_pos = {x, y}
 
     	handled := event_mouseup(window, key)
 		if handled {InvalidateRect(hwnd, nil, false)}
@@ -431,59 +429,9 @@ main :: proc() {
 	println("done.")
 }
 
-Cursor :: struct {
-	path: []int,
-}
-
-Region :: struct {
-	to: Cursor,
-	from: Cursor,
-}
-
-region_is_point :: proc(using region: Region) -> bool {
-	if (len(to.path) != len(from.path)) {return false}
-	for i in 0..<len(to.path) {
-		if to.path[i] != from.path[i] {return false}
-	}
-	return true
-}
-
-CodeEditor :: struct {
-	regions: [dynamic]Region,
-	roots: [dynamic]CodeNode,
-}
-
-CodeNode_Tag :: enum {
-	coll,
-	token,
-}
-
-CodeNode :: struct {
-	tag: CodeNode_Tag,
-	using node: struct #raw_union {
-		coll: CodeNode_Coll,
-	 	token: CodeNode_Token},
-}
-
-CodeCollType :: enum {round, curly, square}
-
-CodeNode_Coll :: struct {
-	coll_type: CodeCollType,
-	children: [dynamic]CodeNode,
-}
-
-CodeNode_Token :: struct {
-	text: string,
-}
-
-Point :: struct {
-	x: int,
-	y: int,
-}
-
 AppState :: struct {
 	initialised: bool,
-	code_editor: ^CodeEditor,
+	code_editor: CodeEditor,
 	inspector: InspectorState,
 	textbox: Ui_Textbox,
 }	
@@ -506,51 +454,50 @@ draw_ui_root :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	// free at start of frame so that data is available for event handling
 	mem.free_all(context.temp_allocator)
 
-	if !app.initialised {
-		app.initialised = true
-		app.code_editor = new(CodeEditor)
-		append(&app.code_editor.regions, Region{})
-	}
-
 	canvas_clear(cnv, 0xFFffffff)
 
 	// draw_inspector(window, cnv, &window.app.inspector)
-	// draw_codeeditor(window, cnv)
+	draw_codeeditor(window, cnv)
 
 
-	using window.app
-	textbox.font_size = 15*scale
-	// uses temp allocator
-	textbox.font = get_default_font(window, textbox.font_size)
-	if !window.app.textbox.init {
-		textbox.border_colour = {200,200,200,255}
-		textbox.text_colour = {50,44,40,255}
-	}
-	draw_textbox(&window.app.textbox, cnv, window.graphics.scale)
+	// using window.app
+	// textbox.font_size = 15*scale
+	// // uses temp allocator
+	// textbox.font = get_default_font(window, textbox.font_size)
+	// if !window.app.textbox.init {
+	// 	textbox.border_colour = {200,200,200,255}
+	// 	textbox.text_colour = {50,44,40,255}
+	// }
+	// draw_textbox(&window.app.textbox, cnv, window.graphics.scale)
 }
 
 event_keydown :: proc(window: ^Window, using evt: Event_Key) -> bool {
 	// fmt.println(evt)
-	return textbox_event_keydown(&window.graphics, &window.app.textbox, evt)
+	// return textbox_event_keydown(&window.graphics, &window.app.textbox, evt)
+	return codeeditor_event_keydown(window, &window.app.code_editor, evt)
 }
 
 event_charinput :: proc(window: ^Window, ch: int) {
-	// fmt.println("Char", ch)
-	textbox_event_charinput(&window.app.textbox, ch)
+	// textbox_event_charinput(&window.app.textbox, ch)
+	codeeditor_event_charinput(window, &window.app.code_editor, ch)
 }
 
 event_mousedown :: proc(window: ^Window, key: Key) -> bool {
-	return textbox_event_mousedown(&window.graphics, &window.app.textbox, key)
+	// return textbox_event_mousedown(&window.graphics, &window.app.textbox, key)
+	return false
 }
 
 event_mouseup :: proc(window: ^Window, key: Key) -> bool {
-	return textbox_event_mouseup(&window.graphics, &window.app.textbox, key)
+	// return textbox_event_mouseup(&window.graphics, &window.app.textbox, key)
+	return false
 }
 
 event_mouse_pos :: proc(window: ^Window, x: int, y: int) -> bool {
-	handled := textbox_event_mouse_pos(&window.graphics, &window.app.textbox, x, y)
-	return handled
+	// return textbox_event_mouse_pos(&window.graphics, &window.app.textbox, x, y)
+	return false
 }
+
+
 
 Sys_Mouse_Cursor_Type :: enum {
 	arrow,
@@ -621,72 +568,4 @@ clipboard_get_text :: proc() -> (out: string, ok: bool) {
 	out = out_
 	ok = true
 	return
-}
-
-draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
-	using window, sk, graphics
-
-	active_colour : u32 = 0xff007ACC
-	paint := make_paint()
-	paint_set_colour(paint, 0xFF000000)
-	active_paint := make_paint()
-	paint_set_colour(active_paint, 0xFF000000 | auto_cast active_colour)
-
-	line_height := 15
-	origin := Point{x=10,y=10}
-
-	{
-		using app.code_editor
-		for root in roots {
-			#partial switch root.tag {
-			case .token:
-				x := 50
-				y := line_height
-				token := root.token
-				text := token.text
-				font_size : f32 = 20
-				font_style := fontstyle_init(auto_cast mem.alloc(size_of_SkFontStyle),
-					SkFontStyle_Weight.normal, SkFontStyle_Width.normal, SkFontStyle_Slant.upright)
-				typeface := typeface_make_from_name(nil, font_style^)
-				font := font_init(auto_cast mem.alloc(size=size_of_SkFont, allocator=context.temp_allocator), typeface, font_size)
-
-				blob := make_textblob_from_text(text, font)
-
-				canvas_draw_text_blob(cnv, blob, auto_cast x, auto_cast y, paint)
-			}
-		}
-	}
-
-	{
-		cursor_width := 2
-		x := origin.x
-		y := origin.y
-		dl := cursor_width/2
-		dr := cursor_width-dl
-		csave := canvas_save(cnv)
-		canvas_scale(cnv, scale, scale)
-		canvas_draw_rect(cnv, sk_rect(l=x-dl, r=x+dr, t=y, b=y+line_height), active_paint)
-		canvas_restore_to_count(cnv, csave)
-	}
-}
-
-codeeditor_event_charinput :: proc(window: ^Window, ch: int) {
-	code_editor := window.app.code_editor
-	using code_editor
-	for region in regions {
-		if !region_is_point(region) {break}
-		path := region.to.path
-
-		if len(roots)==0 {
-			ary := make([]u8,1)
-			ary[0]=auto_cast ch
-			str := string(ary)
-			append(&roots, CodeNode{tag=.token, node={token={text=str}}})
-
-			// p := make()
-			// p[0]=
-			// region.to.path := 
-		}
-	}
-	request_frame(window)
 }

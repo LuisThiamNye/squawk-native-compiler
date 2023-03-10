@@ -48,8 +48,31 @@ SkFontStyle_Slant :: enum {
 	oblique,
 }
 
-SkFontStyle_Weight :: struct{normal:i32}{normal=400}
-SkFontStyle_Width :: struct{normal:i32}{normal=5}
+SkFontStyle_Weight :: enum i32 {
+	invisible=0,
+	thin=100,
+	extra_light=200,
+	light=300,
+	normal=400,
+	medium=500,
+	semi_bold=600,
+	bold=700,
+	extra_bold=800,
+	black=900,
+	extra_black=1000,
+}
+
+SkFontStyle_Width :: enum i32 {
+	ultra_condensed=1,
+	extra_condensed=2,
+	condensed=3,
+	semi_condensed=4,
+	normal=5,
+	semi_expanded=6,
+	expanded=7,
+	extra_expanded=8,
+	ultra_expanded=9,
+}
 
 SkGlyphID :: c_.uint16_t
 
@@ -113,9 +136,9 @@ foreign sklib {
 	textblob_make_from_text :: proc(rawptr, c_.size_t, SkFont, SkTextEncoding) -> SkTextBlob ---
 
 	typeface_make_default :: proc() -> SkTypeface ---
-	typeface_make_from_name :: proc(rawptr, SkFontStyle) -> SkTypeface ---
+	typeface_make_from_name :: proc(cstring, SkFontStyle) -> SkTypeface ---
 
-	fontstyle_init :: proc(^SkFontStyle, c_.int, c_.int, SkFontStyle_Slant) -> ^SkFontStyle ---
+	fontstyle_init :: proc(^SkFontStyle, SkFontStyle_Weight, SkFontStyle_Width, SkFontStyle_Slant) -> ^SkFontStyle ---
 
 	font_init :: proc(SkFont, SkTypeface, SkScalar) -> SkFont ---
 	font_text_to_glyphs :: proc(font: SkFont, text: rawptr, nbytes: c_.size_t, encoding: SkTextEncoding, glyphs: [^]SkGlyphID, max_glyphs: c_.int) -> c_.int ---
