@@ -42,7 +42,7 @@ SkTypeface* sk_typeface_make_default() {
 }
 
 SkTypeface* sk_typeface_make_from_name(char n[], SkFontStyle style) {
-	return SkTypeface::MakeFromName("Consolas", style).release();
+	return SkTypeface::MakeFromName(n, style).release();
 }
 
 }

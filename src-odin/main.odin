@@ -10,36 +10,17 @@ import dc "dyncall"
 
 import win "core:sys/windows"
 
+import "rope"
+
 main :: proc() {
 	win.timeBeginPeriod(1) // higher resolution timings
 
 	win.AddVectoredExceptionHandler(1, exception_handler)
 
-	// lib, ok := dynlib.load_library("Kernel32.dll", true)
-	// fmt.println("ok:", ok)
-	// symaddr, found := dynlib.symbol_address(lib, "GetProcessHeap")
-	// fmt.println("found:", found)
-	// heapalloc, found2 := dynlib.symbol_address(lib, "HeapAlloc")
-
-	// max_stack_size :: 0x1000
-	// dcvm := dc.NewCallVM(max_stack_size)
-	// defer dc.Free(dcvm)
-	// dc.Mode(dcvm, dc.CALL_C_X86_WIN32_STD)
-
-	// dc.Reset(dcvm)
-	// heap := dc.CallPointer(dcvm, symaddr)
-
-	// dc.Reset(dcvm)
-	// dc.ArgPointer(dcvm, heap)
-	// dc.ArgInt(dcvm, 0)
-	// dc.ArgLongLong(dcvm, 8)
-	// m := cast(^u64) dc.CallPointer(dcvm, heapalloc)
-
-	// m^=99999
-	// fmt.println(m^)
-
 	vis.main()
 	// vis.compile_sample()
+
+	// rope.rope_investigation()
 
 	fmt.println("Done.")
 }
