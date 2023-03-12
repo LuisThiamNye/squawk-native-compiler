@@ -76,6 +76,7 @@ CodeCollType :: enum {round, curly, square}
 CodeNode_Coll :: struct {
 	coll_type: CodeCollType,
 	children: [dynamic]CodeNode,
+	close_pos: [2]f32,
 }
 
 CodeNode_Token :: struct {
@@ -178,6 +179,11 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 		y := origin.y
 		left_start_x := x
 		for {
+			if node_i>0 {
+				left_node := &siblings[node_i-1]
+				if .insert_after in left_node.flags {x += space_width}
+				left_node.flags = {}
+			}
 			if node_i >= len(siblings) {
 				if len(stack)==0 {
 					break
@@ -187,6 +193,14 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 
 					// Post processing for frame
 
+					node_i = frame.node_idx + 1
+					siblings = frame.siblings
+					left_start_x = frame.left_start_x
+
+					node := &siblings[frame.node_idx]
+					node.coll.close_pos.x = x
+					node.coll.close_pos.y = y
+
 					{ // Draw collection RHS
 						using frame.coll
 						paint_set_colour(paint, bracket_colour)
@@ -194,9 +208,6 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 						x += width_close
 					}
 
-					node_i = frame.node_idx + 1
-					siblings = frame.siblings
-					left_start_x = frame.left_start_x
 					continue
 				}
 			}
@@ -351,14 +362,11 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 				if node.coll.coll_type==.round {
 					left_start_x += space_width
 				}
-				continue
 			}
 
-			// Conclude node
-			if .insert_after in node.flags {x += space_width}
-
-			node.flags = {}
-			node_i += 1
+			if node.tag != .coll {
+				node_i += 1
+			}
 		}
 	}
 
@@ -373,85 +381,97 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 			for cursor in region.cursors {
 				path := cursor.path
 				node := get_node_at_path(code_editor, path)
-				if node==nil {continue}
-
-				x := node.pos.x
-				y := node.pos.y
-
-				switch node.tag {
-				case .newline: break
-				case .token:
-					token := &node.token
-
-					if cursor.idx >= 0{
-						widthf := measure_text_width(font, token.text[:cursor.idx])
-						x += widthf
-					} else if cursor.place == .before {
-						x -= space_width
-					} else if cursor.place == .after {
-						widthf := measure_text_width(font, token.text)
-						x += widthf + space_width
-					}
-				case .string:
-					text := &node.string.text
-					width_delim := measure_text_width(font, "\"")
-
-					if cursor.place == .before {
-						x -= space_width
-					} else if cursor.idx==0 {
-						break
-					} else {
-						if cursor.idx != 0 {
-							char_count := 0
-							x0 := x
-							for line, i in node.string.lines {
-								x = x0
-								text := line.text
-								text_idx := cursor.idx-1-char_count
-								if i != 0 {y += line_height}
-
-								if 0 <= text_idx && text_idx <= len(text) { // cursor within line
-									widthf := measure_text_width(font, text[:text_idx])
-									x += width_delim + widthf
-									break
-								} else if i==len(node.string.lines)-1 { // last line
-									if text_idx==len(text)+1 { // post- close delimiter
-										widthf := measure_text_width(font, text[:])
-										x += widthf + 2*width_delim
+				x, y: f32
+				if node == nil {
+					x = origin.x
+					y = origin.y
+				} else {
+					x = node.pos.x
+					y = node.pos.y
+	
+					switch node.tag {
+					case .newline: break
+					case .token:
+						token := &node.token
+	
+						if cursor.idx >= 0{
+							widthf := measure_text_width(font, token.text[:cursor.idx])
+							x += widthf
+						} else if cursor.place == .before {
+							x -= space_width
+						} else if cursor.place == .after {
+							widthf := measure_text_width(font, token.text)
+							x += widthf + space_width
+						}
+					case .string:
+						text := &node.string.text
+						width_delim := measure_text_width(font, "\"")
+	
+						if cursor.place == .before {
+							x -= space_width
+						} else if cursor.idx==0 {
+							break
+						} else {
+							if cursor.idx != 0 {
+								char_count := 0
+								x0 := x
+								for line, i in node.string.lines {
+									x = x0
+									text := line.text
+									text_idx := cursor.idx-1-char_count
+									if i != 0 {y += line_height}
+	
+									if 0 <= text_idx && text_idx <= len(text) { // cursor within line
+										widthf := measure_text_width(font, text[:text_idx])
+										x += width_delim + widthf
 										break
-									} else if cursor.place == .after {
-										widthf := measure_text_width(font, text[:])
-										x += widthf + 2*width_delim + space_width
-										break
+									} else if i==len(node.string.lines)-1 { // last line
+										if text_idx==len(text)+1 { // post- close delimiter
+											widthf := measure_text_width(font, text[:])
+											x += widthf + 2*width_delim
+											break
+										} else if cursor.place == .after {
+											widthf := measure_text_width(font, text[:])
+											x += widthf + 2*width_delim + space_width
+											break
+										}
 									}
+									char_count += len(text)+1
 								}
-								char_count += len(text)+1
 							}
 						}
-					}
-				case .coll:
-					width_open : f32
-					width_close : f32
-					switch node.coll.coll_type {
-					case .round:
-						width_open = measure_text_width(font, "(")
-						width_close = measure_text_width(font, ")")
-					case .square:
-						width_open = measure_text_width(font, "[")
-						width_close = measure_text_width(font, "]")
-					case.curly:
-						width_open = measure_text_width(font, "{")
-						width_close = measure_text_width(font, "}")
-					}
-					// coll has idx 0-2
-					if cursor.place==.before {
-						x -= space_width
-					} else if cursor.idx == 1 {
-						x += width_open
-					} else if cursor.idx == 2 {
-						x += width_open + width_close
-					} else if cursor.place == .after {
-						x += width_open + width_close + space_width
+					case .coll:
+						width_open : f32
+						width_close : f32
+						switch node.coll.coll_type {
+						case .round:
+							width_open = measure_text_width(font, "(")
+							width_close = measure_text_width(font, ")")
+						case .square:
+							width_open = measure_text_width(font, "[")
+							width_close = measure_text_width(font, "]")
+						case.curly:
+							width_open = measure_text_width(font, "{")
+							width_close = measure_text_width(font, "}")
+						}
+						
+						if cursor.place==.before {
+							x -= space_width
+						} else if cursor.coll_place == .open_post {
+							x += width_open
+						} else if cursor.coll_place == .close_pre {
+							pos := node.coll.close_pos
+							x = pos.x
+							y = pos.y
+						} else if cursor.coll_place == .close_post {
+							pos := node.coll.close_pos
+							x = pos.x + width_close
+							y = pos.y
+						} else if cursor.place == .after {
+							pos := node.coll.close_pos
+							x = pos.x + width_close + space_width
+							y = pos.y
+						}
 					}
 				}
 				x = math.round(x)
@@ -491,25 +511,37 @@ cursor_move_right :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 			break
 		} else if cursor.coll_place==.open_post {
 			if len(node.coll.children)>0 {
-				break
+				cursor_path_append(cursor, 0)
+				cursor.idx = 0
 			} else {
-				cursor.coll_place=.close_pre
+				cursor.coll_place=.close_post
 			}
 		} else {
 			if cursor.coll_place==.open_pre && len(node.coll.children)>0 {
-				break
+				cursor_path_append(cursor, 0)
+				cursor.idx = 0
+			} else {
+				cursor.idx += 1
 			}
-			cursor.idx += 1
 		}
 		return
 	}
 	// go to next node
-	zip := get_codezip_at_path(editor, cursor.path)
-	codezip_to_next_in(&zip)
-	if zip.node == nil {return}
-	delete(cursor.path)
-	cursor.path = codezip_path(zip)
-	cursor.idx = 0
+	node_idx := path[len(path)-1]
+	siblings := get_siblings_of_codenode(editor, path)
+	if node_idx<len(siblings)-1 {
+		target_node := &siblings[node_idx+1]
+		cursor.path[len(path)-1] = node_idx+1
+		cursor.idx = 0
+	} else if len(path)>0 {
+		zip := get_codezip_at_path(editor, path)
+		codezip_to_parent(&zip)
+		if zip.node != nil {
+			delete(cursor.path)
+			cursor.path = codezip_path(zip)
+			cursor.coll_place = .close_post
+		}
+	}
 }
 
 cursor_move_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
@@ -542,22 +574,40 @@ cursor_move_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		return
 
 	case .coll:
-		if cursor.idx==0 || cursor.place==.before{
+		if cursor.coll_place==.open_pre || cursor.place==.before{
 			break
 		} else if cursor.place==.after {
 			cursor.idx=2
+		} else if cursor.coll_place==.close_post {
+			children := &node.coll.children
+			if len(children) > 0 {
+				child_idx := len(children)-1
+				cursor_path_append(cursor, child_idx)
+				cursor.idx = last_idx_of_node(&children[child_idx])
+			} else {
+				cursor.coll_place = .open_post
+			}
 		} else {
 			cursor.idx -= 1
 		}
 		return
 	}
 	// go to prev node
-	zip := get_codezip_at_path(editor, cursor.path)
-	codezip_to_prev(&zip)
-	if zip.node == nil {return}
-	delete(cursor.path)
-	cursor.path = codezip_path(zip)
-	cursor.idx = last_idx_of_node(zip.node)
+	node_idx := path[len(path)-1]
+	if node_idx>0 {
+		siblings := get_siblings_of_codenode(editor, path)
+		target_node := &siblings[node_idx-1]
+		cursor.path[len(path)-1] = node_idx-1
+		cursor.idx = last_idx_of_node(target_node)
+	} else if len(path)>0 {
+		zip := get_codezip_at_path(editor, path)
+		codezip_to_parent(&zip)
+		if zip.node != nil {
+			delete(cursor.path)
+			cursor.path = codezip_path(zip)
+			cursor.coll_place = .open_pre
+		}
+	}
 }
 
 codenode_remove :: proc(editor: ^CodeEditor, node: ^CodeNode, cursor: ^Cursor) {
@@ -646,7 +696,7 @@ cursor_delete_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		} else if cursor.place==.after {
 			cursor.idx=2 // move left
 		} else {
-			// TBD
+			
 		}
 		return
 	}
@@ -735,7 +785,7 @@ last_idx_of_node :: proc(node: ^CodeNode) -> int {
 	case .string:
 		return rp.get_count(node.string.text)+2
 	case .coll:
-		return 2
+		return 3
 	case .newline:
 		return 0
 	}
@@ -905,35 +955,52 @@ codeeditor_valid_token_charP :: proc(ch: rune) -> bool {
 
 codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input_str: string) {
 	path := cursor.path
+	is_root := len(path)==0
+
 	node := get_node_at_path(editor, path)
-	if node==nil {return}
 
-	node_sibling_idx := path[len(path)-1]
-	parent_level := len(path)-2
-	siblings := get_siblings_of_codenode(editor, path)
+	is_inserting_in_gap := cursor.idx<0
+	is_inserting_first_child := len(roots)==0 || (node.tag==.coll && cursor.coll_place==.open_post)
 
-	// We are inserting before/after
-	// Create a new token node from text input
-	if cursor.place==.after || cursor.place==.before || node.tag==.newline {
-		offset : int
-		if cursor.place==.before {
-			offset = 0
-		} else {
-			offset = 1
+	if is_inserting_first_child { // Create new first child
+		children := &roots
+		if !is_root {
+			children = &node.coll.children
 		}
-		n_nodes_added := codeeditor_insert_nodes_from_text(
-			editor, input_str, siblings, node_sibling_idx+offset)
-		target_node_idx := node_sibling_idx + n_nodes_added + offset - 1
-		cursor.path[len(cursor.path)-1] = target_node_idx
-		cursor.idx = last_idx_of_node(&siblings[target_node_idx])
 
-	// Insert text to current node
-	} else {
+		n_nodes_added := codeeditor_insert_nodes_from_text(
+			editor, input_str, children, 0)
+		target_node_idx := n_nodes_added-1
+		if target_node_idx<0 {panic("nope")}
+
+		cursor_path_append(cursor, target_node_idx)
+		cursor.idx = last_idx_of_node(&children[target_node_idx])
+	} else
+	if node != nil {
+		node_sibling_idx := path[len(path)-1]
+		siblings := get_siblings_of_codenode(editor, path)
+
+		// We are inserting before/after
+		// Create a new token node from text input
+		if is_inserting_in_gap || node.tag==.newline {
+			offset : int
+			if cursor.place==.before {
+				offset = 0
+			} else {
+				offset = 1
+			}
+			n_nodes_added := codeeditor_insert_nodes_from_text(
+				editor, input_str, siblings, node_sibling_idx+offset)
+			target_node_idx := node_sibling_idx + n_nodes_added + offset - 1
+			cursor.path[len(cursor.path)-1] = target_node_idx
+			cursor.idx = last_idx_of_node(&siblings[target_node_idx])
+		} else
+		// Insert text to string
 		if node.tag==.string {
 			codenode_string_insert_text(node, cursor, input_str)
-			
+		} else
 		// Insert text to text node
-		} else if node.tag==.token {
+		if node.tag==.token {
 			token := &node.token
 			if cursor.idx < 0 {return}
 
@@ -971,20 +1038,6 @@ codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input
 				cursor.idx = last_idx_of_node(&siblings[target_node_idx])
 				cursor.idx -= token_length-text_idx
 			}
-
-		// Insert text on coll
-		} else if node.tag==.coll {
-			coll := &node.coll
-
-			if cursor.idx==1 { // Create new first child
-				n_nodes_added := codeeditor_insert_nodes_from_text(
-					editor, input_str, &coll.children, 0)
-				target_node_idx := n_nodes_added-1
-				if target_node_idx<0 {panic("nope")}
-
-				cursor_path_append(cursor, target_node_idx)
-				cursor.idx = last_idx_of_node(&coll.children[target_node_idx])
-			}
 		}
 	}
 }
@@ -1018,83 +1071,82 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 		cursor := &region.to
 		path := cursor.path
 
-		if len(roots)==0 {
-			if ch==' ' {return}
-			ary := make([]u8,1)
-			ary[0]=auto_cast ch
-			append(&roots, CodeNode{tag=.token, node={token={text=ary}}})
+		node := get_node_at_path(editor, path)
 
+		is_inserting_in_gap := cursor.idx<0
+		is_inserting_first_child := len(roots)==0 || (node.tag==.coll && cursor.coll_place==.open_post)
+		is_inserting_macro := len(roots)==0 || cursor.idx==last_idx_of_node(node) || is_inserting_in_gap || is_inserting_first_child
 
-			p := make(type_of(path), len(path)+1)
-			copy(p, path)
-			p[len(p)-1] = 0
-
-			delete(cursor.path)
-			cursor.path = p
-			cursor.idx = 1
-			region.from=region.to
-
-		} else {
-			node := get_node_at_path(editor, path)
-			if node==nil {return}
-
-			node_sibling_idx := path[len(path)-1]
-			siblings := get_siblings_of_codenode(editor, path)
-
-			// Insert collection
-			if ch=='('||ch=='['||ch=='{' {
-				if cursor.idx==last_idx_of_node(node) || cursor.idx<0 {
-					coll : CodeNode
-					coll.tag = .coll
-					if ch=='(' {
-						coll.coll.coll_type = .round
-					} else if ch=='[' {
-						coll.coll.coll_type = .square
-					} else if ch=='{' {
-						coll.coll.coll_type = .curly
+		defer region.from=region.to
+		
+		// Insert collection
+		try_insert_collection: {
+			if is_inserting_macro {
+	 			new_node : CodeNode
+	 			if ch=='('||ch=='['||ch=='{' {
+	 				new_node.tag = .coll
+	 				if ch=='(' {
+	 					new_node.coll.coll_type = .round
+	 				} else if ch=='[' {
+	 					new_node.coll.coll_type = .square
+	 				} else if ch=='{' {
+	 					new_node.coll.coll_type = .curly
+	 				}
+	 			} else
+	 			// Insert string
+	 			if ch=='"' {
+	 				new_node.tag = .string
+	 				new_node.string.text = rp.of_string("")
+	 
+	 			} else {
+	 				break try_insert_collection
+	 			}
+	 
+	 			if is_inserting_first_child {
+	 				children := &roots
+	 				if len(path)>0 {
+	 					children = &node.coll.children
+	 				}
+	 
+	 				inject_at(children, 0, new_node)
+	 				cursor_path_append(cursor, 0)
+	 			} else {
+	 				node_sibling_idx := path[len(path)-1]
+	 				siblings := get_siblings_of_codenode(editor, path)
+	 				target_node_idx : int
+	 				if cursor.place==.before {
+	 					target_node_idx = node_sibling_idx
+	 				} else {
+	 					target_node_idx = node_sibling_idx+1
+	 				}
+	 				inject_at(siblings, target_node_idx, new_node)
+	 				cursor.path[len(cursor.path)-1] = target_node_idx
+	 			}
+	 			cursor.idx = 1
+		 		return
+	 		}
+	 	}
+		// inserting first child
+		{
+			cheese: {
+				if node != nil {
+	
+					// start inserting
+					if ch==' ' {
+						if cursor.idx==last_idx_of_node(node) {
+							cursor.place = .after
+							break cheese
+						} else if cursor.idx == 0 {
+							cursor.place = .before
+							break cheese
+						}
 					}
-					target_node_idx : int
-					if cursor.place==.before {
-						target_node_idx = node_sibling_idx
-					} else {
-						target_node_idx = node_sibling_idx+1
-					}
-					inject_at(siblings, target_node_idx, coll)
-					cursor.path[len(cursor.path)-1] = target_node_idx
-					cursor.idx = 1
 				}
 
-			// Insert string
-			} else if ch=='"' &&
-			(cursor.idx==last_idx_of_node(node) || cursor.idx<0) {
-				str_node : CodeNode
-				str_node.tag = .string
-				str_node.string.text = rp.of_string("")
-
-				// @copypaste from insert coll
-				target_node_idx : int
-				if cursor.place==.before {
-					target_node_idx = node_sibling_idx
-				} else {
-					target_node_idx = node_sibling_idx+1
-				}
-				inject_at(siblings, target_node_idx, str_node)
-				cursor.path[len(cursor.path)-1] = target_node_idx
-				cursor.idx = 1
-
-			// start inserting
-			} else if ch==' ' && cursor.idx==last_idx_of_node(node) {
-				cursor.place = .after
-			} else if ch==' ' && cursor.idx == 0 {
-				cursor.place = .before
-			
-			// General text insertion
-			} else {
+				// General text insertion
 				input_str := utf8.runes_to_string({cast(rune) ch}, context.temp_allocator)
 				codeeditor_insert_text(editor, cursor, input_str)
 			}
-
-			region.from=region.to
 		}
 	}
 }
@@ -1234,7 +1286,7 @@ codezip_to_parent :: proc(using zip: ^CodeNode_Zipper) {
 		node=nil
 	} else {
 		pop(&stack)
-		sf := &stack[level]
+		sf := &stack[level-1]
 		node= &sf.nodes[sf.idx]
 	}
 }
