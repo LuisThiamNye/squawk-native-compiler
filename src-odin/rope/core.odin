@@ -229,6 +229,13 @@ slice_append :: proc(array: []$E, extra: $A, allocator:=context.allocator) -> []
 	return s2
 }
 
+slice_pop :: proc(array: ^[]$E, allocator:=context.allocator) {
+	s2 := make([]E, len(array)-1, allocator)
+	copy(s2, array[:len(array)-1])
+	delete(array^, allocator)
+	array^ = s2
+}
+
 insert_text :: proc(node: ^RopeNode, index: int, text: string, allocator:=context.allocator) {
 	assert_rope(node)
 	if len(text)==0 {return}
