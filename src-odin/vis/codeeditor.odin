@@ -84,6 +84,7 @@ CodeNode_Coll :: struct {
 	coll_type: CodeCollType,
 	children: [dynamic]CodeNode,
 	close_pos: [2]f32,
+	// TODO support a prefix token
 }
 
 CodeNode_Token :: struct {
@@ -100,6 +101,21 @@ CodeEditor :: struct {
 	regions: [dynamic]Region,
 	roots: [dynamic]CodeNode,
 	font: sk.SkFont, // one frame lifetime
+	file_path: string,
+}
+
+import "core:os"
+import "core:slice"
+
+codeeditor_refresh_from_file :: proc(editor: ^CodeEditor) {
+	text, ok := os.read_entire_file_from_filename(editor.file_path)
+	if !ok {return}
+	nodes, n_ok := codenodes_from_string(string(text))
+	if !n_ok {
+		fmt.println("error parsing nodes from file")
+	}
+
+	editor.roots = slice.to_dynamic(nodes)
 }
 
 draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
@@ -109,12 +125,16 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	if !initP {
 		initP = true
 
+		file_path = "/me/prg/fera-db2/cool.sq"
+
 		region : Region
 		// region.to.path = make(type_of(region.to.path), 1)
 		// region.to.path[0] = 0
 		region.to.idx = 0
 		region.from=region.to
 		append(&code_editor.regions, region)
+
+		codeeditor_refresh_from_file(code_editor)
 	}
 
 	active_colour : u32 = 0xff007ACC
@@ -149,9 +169,14 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	space_width := math.round(measure_text_width(font, " "))
 
 
-	for region in regions {
+	for region in &regions {
 		dbg_println_cursor(region.to)
-		for cursor in region.cursors {
+		for cursor in &region.cursors {
+			if len(cursor.path)==0 && len(code_editor.roots)>0 && code_editor.roots[0].tag!=.newline {
+				cursor_path_append(&cursor, 0)
+				cursor.idx = 0
+			}
+
 			node := get_node_at_path(code_editor, cursor.path)
 			if node==nil {continue}
 			if cursor.place == .before {
@@ -260,12 +285,6 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 				x += width
 			case .string:
 				text := &node.string.text
-
-				// @debug
-				// fmt.printf("string: \"%v\"\n", rp.to_string(text))
-				fmt.print("rope: ")
-				rp.print_rope(text)
-				fmt.println()
 
 				text_lines : [dynamic]string
 				{
@@ -508,7 +527,13 @@ dbg_println_cursor :: proc(cursor: Cursor) {
 
 cursor_move_right :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 	node := get_node_at_path(editor, path)
-	if node==nil {return}
+	if node==nil {
+		if len(editor.roots)>0 {
+			cursor_path_append(cursor, 0)
+			cursor.idx=0
+		}
+		return
+	}
 	switch node.tag {
 
 	case .newline: break
@@ -552,20 +577,28 @@ cursor_move_right :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		return
 	}
 	// go to next node
-	node_idx := path[len(path)-1]
-	siblings := get_siblings_of_codenode(editor, path)
-	if node_idx<len(siblings)-1 {
-		target_node := &siblings[node_idx+1]
-		cursor.path[len(path)-1] = node_idx+1
-		cursor.idx = 0
-	} else if len(path)>0 {
-		zip := get_codezip_at_path(editor, path)
-		codezip_to_parent(&zip)
-		if zip.node != nil {
-			delete(cursor.path)
-			cursor.path = codezip_path(zip)
-			cursor.coll_place = .close_post
+	for {
+		node_idx := path[len(path)-1]
+		siblings := get_siblings_of_codenode(editor, path)
+		if node_idx<len(siblings)-1 {
+			target_node := &siblings[node_idx+1]
+			cursor.path[len(path)-1] = node_idx+1
+			if target_node.tag==.newline && node_idx<len(siblings)-2 &&
+			siblings[node_idx+2].tag!=.newline {
+				path = cursor.path
+				continue
+			}
+			cursor.idx = 0
+		} else if len(path)>0 {
+			zip := get_codezip_at_path(editor, path)
+			codezip_to_parent(&zip)
+			if zip.node != nil {
+				delete(cursor.path)
+				cursor.path = codezip_path(zip)
+				cursor.coll_place = .close_post
+			}
 		}
+		break
 	}
 }
 
@@ -618,20 +651,32 @@ cursor_move_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		return
 	}
 	// go to prev node
-	node_idx := path[len(path)-1]
-	if node_idx>0 {
-		siblings := get_siblings_of_codenode(editor, path)
-		target_node := &siblings[node_idx-1]
-		cursor.path[len(path)-1] = node_idx-1
-		cursor.idx = last_idx_of_node(target_node)
-	} else if len(path)>0 {
-		zip := get_codezip_at_path(editor, path)
-		codezip_to_parent(&zip)
-		if zip.node != nil {
+	on_newline := node.tag==.newline
+	for {
+		node_idx := path[len(path)-1]
+		if node_idx>0 {
+			siblings := get_siblings_of_codenode(editor, path)
+			target_node := &siblings[node_idx-1]
+			cursor.path[len(path)-1] = node_idx-1
+			if target_node.tag==.newline && !on_newline {
+				on_newline=true
+				path = cursor.path
+				continue
+			}
+			cursor.idx = last_idx_of_node(target_node)
+		} else if len(path)>0 {
+			zip := get_codezip_at_path(editor, path)
+			codezip_to_parent(&zip)
 			delete(cursor.path)
-			cursor.path = codezip_path(zip)
-			cursor.coll_place = .open_pre
+			if zip.node != nil {
+				cursor.path = codezip_path(zip)
+				cursor.coll_place = .open_pre
+			} else {
+				cursor.path = {}
+				cursor.idx=0
+			}
 		}
+		break
 	}
 }
 
@@ -951,10 +996,24 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 				}
 			}
 		}
+	} else if mods=={.control} {
+		#partial switch key {
+		case .s:
+			sb := strings.builder_make()
+			w := strings.to_writer(&sb)
+			codenode_serialise_write_nodes(w, editor.roots)
+			data := transmute([]u8) strings.to_string(sb)
+			ok := os.write_entire_file(editor.file_path, data)
+			if !ok {
+				fmt.println("failed to write file")
+			}
+		}
 	}
 
 	return handled
 }
+
+import "core:io"
 
 codenode_string_insert_text :: proc(node: ^CodeNode, cursor: ^Cursor, text: string) {
 	snode := &node.string
@@ -1027,7 +1086,8 @@ codeeditor_insert_nodes_from_text :: proc
 import "core:unicode/utf8"
 
 codeeditor_valid_token_charP :: proc(ch: rune) -> bool {
-	return !(ch==' ' || ch<0x20)
+	return !(ch==' ' || ch<0x20 || ch=='('||ch=='['||ch=='{'||ch==')'||ch==']'||ch=='}'
+		|| ch=='"')
 }
 
 codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input_str: string) {
@@ -1037,7 +1097,7 @@ codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input
 	node := get_node_at_path(editor, path)
 
 	is_inserting_in_gap := cursor.idx<0
-	is_inserting_first_child := len(roots)==0 || (node.tag==.coll && cursor.coll_place==.open_post)
+	is_inserting_first_child := is_root || (node.tag==.coll && cursor.coll_place==.open_post)
 
 	if is_inserting_first_child { // Create new first child
 		children := &roots
@@ -1144,8 +1204,8 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 		node := get_node_at_path(editor, path)
 
 		is_inserting_in_gap := cursor.idx<0
-		is_inserting_first_child := len(roots)==0 || (node.tag==.coll && cursor.coll_place==.open_post)
-		is_inserting_macro := len(roots)==0 || cursor.idx==last_idx_of_node(node) || is_inserting_in_gap || is_inserting_first_child
+		is_inserting_first_child := len(path)==0 || (node.tag==.coll && cursor.coll_place==.open_post)
+		is_inserting_macro := len(path)==0 || cursor.idx==last_idx_of_node(node) || is_inserting_in_gap || is_inserting_first_child
 
 		defer region.from=region.to
 		

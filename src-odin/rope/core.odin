@@ -381,3 +381,18 @@ to_string :: proc(rope: ^RopeNode) -> string {
 		}
 	}
 }
+
+
+import "core:io"
+
+write_rope :: proc(w: io.Writer, rope: ^RopeNode) {
+	it := byte_iterator(rope)
+	for {
+		ch, ok := iter_next(&it)
+		if ok {
+			io.write_byte(w, ch)
+		} else {
+			return
+		}
+	}
+}

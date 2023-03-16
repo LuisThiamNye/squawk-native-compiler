@@ -17,8 +17,8 @@ main :: proc() {
 
 	win.AddVectoredExceptionHandler(1, exception_handler)
 
-	vis.main()
-	// vis.compile_sample()
+	// vis.main()
+	vis.compile_sample()
 
 	// rope.rope_investigation()
 

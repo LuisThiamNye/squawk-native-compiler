@@ -783,7 +783,7 @@ vi_interp_frame :: proc(vi: ^VarInterp, using frame: ^AstStackFrame) {
 		token := ast_node.token
 		// TODO improve
 		_negP := token[0]=='-'
-		value, ok := strconv.parse_i64_of_base(token, 10)
+		value, ok := strconv.parse_i64_maybe_prefixed(token)
 		if !ok {panic("couldn't parse number")}
 		v := new(i64)
 		v^ = value
