@@ -155,7 +155,8 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	font_size : f32 = 15*scale
 	font_style := fontstyle_init(auto_cast mem.alloc(size_of_SkFontStyle),
 		SkFontStyle_Weight.normal, SkFontStyle_Width.condensed, SkFontStyle_Slant.upright)
-	typeface_name : cstring = "Shantell Sans"
+	// typeface_name : cstring = "Shantell Sans"
+	typeface_name : cstring = "Input Sans"
 	typeface := typeface_make_from_name(typeface_name, font_style^)
 
 	// danger danger !!!
@@ -167,6 +168,7 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	line_height := line_spacing
 
 	space_width := math.round(measure_text_width(font, " "))
+
 
 
 	for region in &regions {
@@ -543,7 +545,9 @@ cursor_move_right :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		if cursor.place==.after || cursor.idx == len(token.text) {
 			break
 		} else {
-			cursor.idx += 1
+			text_idx := cursor.idx
+			_, size := utf8.decode_rune_in_bytes(token.text[text_idx:])
+			cursor.idx += size
 		}
 		return
 
@@ -551,6 +555,15 @@ cursor_move_right :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		text := node.string.text
 		if cursor.place==.after || cursor.idx == rp.get_count(text)+2 {
 			break
+		} else if cursor.idx>0 {
+			text_idx := cursor.idx-1
+			if text_idx < rp.get_count(text) {
+				text := rp.to_string(&text, context.temp_allocator)
+				_, size := utf8.decode_rune_in_string(text[text_idx:])
+				cursor.idx += size
+			} else {
+				cursor.idx += 1
+			}
 		} else {
 			cursor.idx += 1
 		}
@@ -614,7 +627,9 @@ cursor_move_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		if cursor.place == .after {
 			cursor.idx = len(token.text)
 		} else if cursor.idx > 0 {
-			cursor.idx -= 1
+			text_idx := cursor.idx
+			_, size := utf8.decode_last_rune(token.text[:text_idx])
+			cursor.idx -= size
 		} else {
 			break
 		}
@@ -625,7 +640,14 @@ cursor_move_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		if cursor.place == .after {
 			cursor.idx = rp.get_count(text)+2
 		} else if cursor.idx > 0 {
-			cursor.idx -= 1
+			text_idx := cursor.idx-1
+			if text_idx > 0 {
+				text := rp.to_string(&text, context.temp_allocator)
+				_, size := utf8.decode_last_rune(text[:text_idx])
+				cursor.idx -= size
+			} else {
+				cursor.idx -= 1
+			}
 		} else {
 			break
 		}
@@ -738,14 +760,16 @@ cursor_delete_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		} else if cursor.idx > 0 {
 			// delete a char
 			text := &node.token.text
-			text2 := make([]u8, len(text)-1)
-			copy(text2, text[:cursor.idx-1])
+			text_idx := cursor.idx
+			_, size := utf8.decode_last_rune(text[:text_idx])
+			text2 := make([]u8, len(text)-size)
+			copy(text2, text[:cursor.idx-size])
 			if cursor.idx < len(text) {
-				copy(text2[cursor.idx-1:], text[cursor.idx:])
+				copy(text2[cursor.idx-size:], text[cursor.idx:])
 			}
 			delete(text^)
 			text^ = text2
-			cursor.idx -= 1
+			cursor.idx -= size
 
 		} else if cursor.idx==0 { // delete before
 			node_idx := path[len(path)-1]
@@ -767,8 +791,10 @@ cursor_delete_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		} else if text_idx>0 {
 			// delete a char
 			text := &node.string.text
-			rp.remove_range(text, text_idx-1, text_idx)
-			cursor.idx -= 1
+			text_str := rp.to_string(text, context.temp_allocator)
+			_, size := utf8.decode_last_rune(text_str[:text_idx])
+			rp.remove_range(text, text_idx-size, text_idx)
+			cursor.idx -= size
 		} else {
 			// TBD delete before
 		}
@@ -1022,7 +1048,7 @@ codenode_string_insert_text :: proc(node: ^CodeNode, cursor: ^Cursor, text: stri
 
 	rp.insert_text(&snode.text, text_idx, text)
 
-	cursor.idx += 1
+	cursor.idx += len(text)
 }
 
 max_token_length :: 1024
@@ -1192,9 +1218,21 @@ delete_cursor :: proc(cursor: Cursor) {
 }
 
 codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int) {
-	if ch > 255 {return}
-	if ch < 0x20 {return}
 	using editor
+
+	if ch < 0x20 {return}
+
+	if ch > 255 { // long unicode character
+		for region in &regions {
+			if !region_is_point(region) {continue}
+			cursor := &region.to
+
+			input_str := utf8.runes_to_string({cast(rune) ch}, context.temp_allocator)
+			codeeditor_insert_text(editor, cursor, input_str)
+			region.from = region.to
+		}
+		return
+	}
 
 	for region in &regions {
 		if !region_is_point(region) {continue}

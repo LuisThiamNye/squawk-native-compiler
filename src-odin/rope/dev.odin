@@ -84,4 +84,18 @@ rope_investigation :: proc() {
 		remove_range(&rope, 1, 2)
 		println_rope(&rope)
 	}
+
+	{ // Unicode
+		fmt.println("Rope for Λ")
+		rope := of_string("Λ")
+		println_rope(&rope)
+
+		fmt.println("to string:", to_string(&rope))
+	
+		fmt.println("\nAppend →")
+		insert_text(&rope, get_count(rope), "→")
+		println_rope(&rope)
+
+		fmt.println("to string:", to_string(&rope))
+	}
 }

@@ -287,6 +287,7 @@ make_interp_from_ast_nodes :: proc(ast_nodes: []ast.AstNode, max_depth: int) -> 
 	reg_intrinsic_ast(interp, "goto", intrinsic_goto)
 	reg_intrinsic_ast(interp, "if", intrinsic_ifbranch)
 	reg_intrinsic_ast(interp, "let", intrinsic_let)
+	reg_intrinsic_ast(interp, "Λ", intrinsic_let)
 	reg_intrinsic_ast(interp, "set", intrinsic_set)
 	reg_intrinsic_ast(interp, "struct", intrinsic_structdecl)
 	reg_intrinsic_ast(interp, "new", intrinsic_new)

@@ -124,7 +124,7 @@
             0))))))
 
 
-
+;; TODO dynamic arrays demo/test cases
 (def Dynamic-Array
   (struct
     (count int)
@@ -133,17 +133,34 @@
 
 (def make-dyn-array
   (fn [(item-type *Type-Info)] -> Dynamic-Array
-    (do
-      (let ary (new Dynamic-Array))
-      (set ary/count 0)
-      (set ary/capacity 0)
-      (assoc-meta (deref ary)
-        :item-type item-type))))
+    .[(let *ary (mut Dynamic-Array))
+      (set *ary/count 0)
+      (set *ary/capacity 0)
+      (assoc-meta ary
+        :item-type item-type)]))
 
 (def append
-  (fn [(array *Dynamic-Array) (item ?????)]
-    (do
-      )))
+  (fn [(*array *Dynamic-Array)
+       ; (item (:item-type (meta array)))
+       (item Any)]
+    .[; (Λ array @*array)
+      (Λ item-type (:item-type (meta #'array)))
+      (if (not= (type-of item) item-type)
+        (panic! "invalid item type"))
+      (Λ item (cast item-type item))
+      (if (= array/count array/capacity)
+        (do
+          (Λ old-data array/data)
+          (Λ c1 array/count)
+          (Λ c2 (+ 1 array/count))
+          (set *array/data (allocate c2))
+          (memcopy array/data old-data c1)
+          (deallocate old-data c1)
+          (set *array/capacity (+ 8 (* 2 array/capacity)))))
+      (do
+        (memcopy (ptr-offset array/data array/count)
+          *item (:size item-type))
+        (set *array/count (+ 1 array/count)))]))
 
 
 

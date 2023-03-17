@@ -442,3 +442,13 @@ a/name ;; => String
 a/ptr/name ;; => *String
 ;; The latter seems better as long as implicit dereferencing
 ;; works well
+
+
+
+;; system for convenience:
+(let *p (mut Point)) ;; stack allocated mutable data
+p ;; omitting a star is a dereference
+(let x *p/x) ;; *x would be more descriptive
+(let xv p/x) ;; xv variable uses same memory of p
+(set x 1)
+xv ;; => 1

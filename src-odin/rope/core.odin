@@ -369,8 +369,8 @@ iter_next :: proc(using it: ^RopeByteIterator) -> (ret: u8, ok: bool) {
 }
 
 
-to_string :: proc(rope: ^RopeNode) -> string {
-	b := strings.builder_make()
+to_string :: proc(rope: ^RopeNode, allocator := context.allocator) -> string {
+	b := strings.builder_make(allocator)
 	it := byte_iterator(rope)
 	for {
 		ch, ok := iter_next(&it)
