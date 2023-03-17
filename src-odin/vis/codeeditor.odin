@@ -82,6 +82,7 @@ CodeCollType :: enum {round, curly, square}
 
 CodeNode_Coll :: struct {
 	coll_type: CodeCollType,
+	prefix: bool,
 	children: [dynamic]CodeNode,
 	close_pos: [2]f32,
 	// TODO support a prefix token
@@ -89,11 +90,13 @@ CodeNode_Coll :: struct {
 
 CodeNode_Token :: struct {
 	text: []u8,
+	prefix: bool,
 }
 
 CodeNode_String :: struct {
 	text: rp.RopeNode,
 	lines: []struct{width: f32, text: string},
+	prefix: bool,
 }
 
 CodeEditor :: struct {
@@ -251,8 +254,18 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 			}
 
 			node := &siblings[node_i]
-			if node_i>0 && siblings[node_i-1].tag != .newline {
-				x += space_width
+			if node_i>0 {
+				left_node := &siblings[node_i-1]
+				has_prefix := codenode_has_prefix(node)
+				if left_node.tag != .newline && !has_prefix {
+					x += space_width
+				}
+				left_is_prefix := left_node.tag==.token && left_node.token.prefix
+				if left_is_prefix && !has_prefix {
+					panic("left node is prefix, but this node does not have a prefix")
+				} else if has_prefix && !left_is_prefix {
+					panic("this node has a prefix, but left node is not a prefix")
+				}
 			}
 			if .insert_before in node.flags {
 				x += space_width
@@ -517,6 +530,24 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	}
 }
 
+codenode_has_prefix :: proc(node: ^CodeNode) -> bool {
+	if node.tag==.coll {
+		return node.coll.prefix
+	} else if node.tag==.string {
+		return node.string.prefix
+	} else {
+		return false
+	}
+}
+
+codenode_set_prefix :: proc(node: ^CodeNode, prefix: bool) {
+	if node.tag==.coll {
+		node.coll.prefix = prefix
+	} else if node.tag==.string {
+		node.string.prefix = prefix
+	}
+}
+
 dbg_println_cursor :: proc(cursor: Cursor) {
 	fmt.print("Cursor:", cursor.path, "")
 	if cursor.idx>=0 {
@@ -536,6 +567,8 @@ cursor_move_right :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		}
 		return
 	}
+	prefix := false
+
 	switch node.tag {
 
 	case .newline: break
@@ -543,11 +576,14 @@ cursor_move_right :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 	case .token:
 		token := node.token
 		if cursor.place==.after || cursor.idx == len(token.text) {
+			if token.prefix {prefix=true}
 			break
-		} else {
+		} else if cursor.idx>=0 {
 			text_idx := cursor.idx
 			_, size := utf8.decode_rune_in_bytes(token.text[text_idx:])
 			cursor.idx += size
+		} else {
+			cursor.idx=0
 		}
 		return
 
@@ -602,6 +638,9 @@ cursor_move_right :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 				continue
 			}
 			cursor.idx = 0
+			if prefix {
+				cursor_move_right(editor, cursor)
+			}
 		} else if len(path)>0 {
 			zip := get_codezip_at_path(editor, path)
 			codezip_to_parent(&zip)
@@ -618,6 +657,7 @@ cursor_move_right :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 cursor_move_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 	node := get_node_at_path(editor, path)
 	if node==nil{return}
+
 	switch node.tag{
 
 	case .newline: break
@@ -641,12 +681,13 @@ cursor_move_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 			cursor.idx = rp.get_count(text)+2
 		} else if cursor.idx > 0 {
 			text_idx := cursor.idx-1
-			if text_idx > 0 {
+			if text_idx > 0 && text_idx<=rp.get_count(text) {
 				text := rp.to_string(&text, context.temp_allocator)
 				_, size := utf8.decode_last_rune(text[:text_idx])
 				cursor.idx -= size
 			} else {
 				cursor.idx -= 1
+				if node.string.prefix && cursor.idx==0 {break}
 			}
 		} else {
 			break
@@ -670,6 +711,7 @@ cursor_move_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		} else {
 			cursor.idx -= 1
 		}
+		if node.coll.prefix && cursor.coll_place==.open_pre {break}
 		return
 	}
 	// go to prev node
@@ -693,6 +735,9 @@ cursor_move_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 			if zip.node != nil {
 				cursor.path = codezip_path(zip)
 				cursor.coll_place = .open_pre
+				if zip.node.coll.prefix {
+					cursor_move_left(editor, cursor)
+				}
 			} else {
 				cursor.path = {}
 				cursor.idx=0
@@ -734,6 +779,11 @@ codenode_remove :: proc(editor: ^CodeEditor, node: ^CodeNode, cursor: ^Cursor) {
 	}
 
 	siblings := get_siblings_of_codenode(editor, path)
+	if node.tag==.token && node.token.prefix {
+		codenode_set_prefix(&siblings[node_idx+1], false)
+	} else if codenode_has_prefix(node) {
+		siblings[node_idx-1].token.prefix = false
+	}
 	delete_codenode(node^) // must delete before removing
 	ordered_remove(siblings, node_idx)
 }
@@ -756,6 +806,9 @@ cursor_delete_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 
 		} else if cursor.idx==1 && len(token.text)==1 { // delete the node
 			codenode_remove(editor, node, cursor)
+			if token.prefix {
+				cursor_move_right(editor, cursor)
+			}
 
 		} else if cursor.idx > 0 {
 			// delete a char
@@ -1112,8 +1165,8 @@ codeeditor_insert_nodes_from_text :: proc
 import "core:unicode/utf8"
 
 codeeditor_valid_token_charP :: proc(ch: rune) -> bool {
-	return !(ch==' ' || ch<0x20 || ch=='('||ch=='['||ch=='{'||ch==')'||ch==']'||ch=='}'
-		|| ch=='"')
+	return !(ch==' ' || ch<0x20 ||
+		ch=='('||ch=='['||ch=='{'||ch==')'||ch==']'||ch=='}'||ch=='"')
 }
 
 codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input_str: string) {
@@ -1158,6 +1211,25 @@ codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input
 			target_node_idx := node_sibling_idx + n_nodes_added + offset - 1
 			cursor.path[len(cursor.path)-1] = target_node_idx
 			cursor.idx = last_idx_of_node(&siblings[target_node_idx])
+		} else
+		// add token node before/after string/coll
+		if (node.tag==.string || node.tag==.coll) &&
+		(cursor.idx==0 || cursor.idx==last_idx_of_node(node)) {
+			if cursor.idx==0 {
+				cursor.place = .before
+				codeeditor_insert_text(editor, cursor, input_str)
+				node = nil
+				siblings := get_siblings_of_codenode(editor, cursor.path)
+				new_node_idx := cursor.path[len(cursor.path)-1]
+				new_node := &siblings[new_node_idx]
+				if new_node.tag==.token {
+					codenode_set_prefix(&siblings[new_node_idx+1], true)
+					new_node.token.prefix = true
+				}
+			} else {
+				cursor.place = .after
+				codeeditor_insert_text(editor, cursor, input_str)
+			}
 		} else
 		// Insert text to string
 		if node.tag==.string {
@@ -1286,6 +1358,19 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 	 					target_node_idx = node_sibling_idx
 	 				} else {
 	 					target_node_idx = node_sibling_idx+1
+		 				if node.tag==.token {
+		 					if node.token.prefix { // shouldn't insert between prefix and coll
+		 						delete_codenode(new_node)
+		 						return
+		 					} else if cursor.place!=.after { // token becomes prefix
+			 					node.token.prefix = true
+			 					if new_node.tag==.coll {
+			 						new_node.coll.prefix=true
+			 					} else if new_node.tag==.string {
+			 						new_node.string.prefix=true
+			 					}
+			 				}
+			 			}
 	 				}
 	 				inject_at(siblings, target_node_idx, new_node)
 	 				cursor.path[len(cursor.path)-1] = target_node_idx
@@ -1301,7 +1386,13 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 	
 					// start inserting
 					if ch==' ' {
-						if cursor.idx==last_idx_of_node(node) {
+						if node.tag==.token && node.token.prefix {
+							node.token.prefix = false
+							siblings := get_siblings_of_codenode(editor, path)
+							node_idx := path[len(path)-1]
+							codenode_set_prefix(&siblings[node_idx+1], false)
+							break
+						} else if cursor.idx==last_idx_of_node(node) {
 							cursor.place = .after
 							break cheese
 						} else if cursor.idx == 0 {
