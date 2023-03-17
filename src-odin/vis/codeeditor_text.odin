@@ -41,7 +41,7 @@ codenode_serialise_write_nodes :: proc(w: io.Writer, nodes: [dynamic]CodeNode, i
 			acc = 0
 			write_indent(w, acc+active_child_indent_level)
 		} else {
-			if i<n-1 {
+			if i<n-1 && !(child.tag==.token&&child.token.prefix) {
 				io.write_byte(w, ' ')
 				acc += 1
 			}
@@ -119,6 +119,7 @@ read_string_node_from_escaped_string :: proc(input: string) -> (CodeNode, int, b
 codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
 	StackFrame :: struct {
 		delimiter: u8,
+		prefix: bool,
 		nodes : [dynamic]CodeNode,
 	}
 
@@ -126,6 +127,7 @@ codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
 	defer delete(stack)
 	append(&stack, StackFrame{})
 
+	last_token_end_i := -1
 	ok = true
 	for i:=0; ; {
 		using frame := &stack[len(stack)-1]
@@ -146,19 +148,24 @@ codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
 			append(&nodes, node)
 			i += 1
 		} else if ch=='"' {
-			i += 1
-			if i>=len(input) {
+			text_start := i+1
+			if text_start>=len(input) {
 				ok = false
 				break
 			}
-			node, str_count, s_ok := read_string_node_from_escaped_string(input[i:])
+			node, str_count, s_ok := read_string_node_from_escaped_string(input[text_start:])
 			if !s_ok {
 				fmt.println("string failure")
 				ok = false
 				break
 			}
+			if i == last_token_end_i { // has prefix
+				left_node := &nodes[len(nodes)-1]
+				left_node.token.prefix = true
+				node.string.prefix = true
+			}
 			append(&nodes, node)
-			i += 1+str_count
+			i = text_start + str_count + 1
 		} else {
 			try_coll: {
 				closer : u8
@@ -171,7 +178,7 @@ codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
 				} else {
 					break try_coll
 				}
-				append(&stack, StackFrame{delimiter=closer})
+				append(&stack, StackFrame{delimiter=closer, prefix=(i == last_token_end_i)})
 				i += 1
 				continue
 			}
@@ -198,6 +205,7 @@ codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
 				node.token.text = make(type_of(node.token.text), len(segment))
 				copy(node.token.text, segment)
 				append(&nodes, node)
+				last_token_end_i = i
 
 			} else if ch==frame.delimiter {
 				coll_type : CodeCollType
@@ -216,7 +224,14 @@ codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
 				node.coll.coll_type = coll_type
 				node.coll.children = nodes
 				pop(&stack)
-				append(&stack[len(stack)-1].nodes, node)
+				nodes := &stack[len(stack)-1].nodes
+				if prefix {
+					left_node := &nodes[len(nodes)-1]
+					assert(left_node.tag==.token)
+					left_node.token.prefix = true
+					node.coll.prefix = true
+				}
+				append(nodes, node)
 				i += 1
 
 			} else {

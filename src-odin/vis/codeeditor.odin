@@ -757,6 +757,8 @@ cursor_move_right_token_end :: proc(editor: ^CodeEditor, using cursor: ^Cursor) 
 		if len(editor.roots)>0 {
 			cursor_path_append(cursor, 0)
 			cursor.idx=0
+		} else {
+			return
 		}
 	}
 
@@ -866,6 +868,82 @@ cursor_move_left_token_start :: proc(editor: ^CodeEditor, using cursor: ^Cursor)
 	}
 }
 
+cursor_move_out_to_insert_newline :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
+	node := get_node_at_path(editor, path)
+	if node==nil {
+		if len(editor.roots)>0 {
+			cursor_path_append(cursor, 0)
+			cursor.idx=0
+		} else {
+			return
+		}
+	}
+
+	node_idx := path[len(path)-1]
+
+	move_out := true
+
+	switch node.tag {
+
+	case .newline:
+	case .token:
+	case .string:
+
+	case .coll:
+		if cursor.coll_place==.open_pre || cursor.coll_place==.open_post ||
+		cursor.coll_place==.close_pre {
+			cursor.place = .after
+			move_out = false
+		}
+	}
+
+	target_node : ^CodeNode
+	siblings := get_siblings_of_codenode(editor, cursor.path)
+
+	// go to next node
+	if move_out {
+		zip := get_codezip_at_path(editor, cursor.path)
+		defer delete_codezip(zip)
+		codezip_to_parent(&zip)
+		parent := zip.node
+		delete(cursor.path)
+		if parent==nil {
+			cursor.path = make(type_of(cursor.path), 1)
+			cursor.path[0]=len(editor.roots)-1
+			last_node := &siblings[cursor.path[0]]
+			cursor.idx = last_idx_of_node(last_node)
+			target_node = last_node
+		} else { // parent is the coll to append after
+			cursor.path = codezip_path(zip)
+			cursor.place = .after
+			target_node = parent
+		}
+	}
+
+	// handle newline insertion
+	outer_siblings := get_siblings_of_codenode(editor, cursor.path)
+
+	should_remove_newline := node.tag==.newline && siblings!=outer_siblings
+	if should_remove_newline {
+		delete_codenode(node^)
+		ordered_remove(siblings, node_idx)
+	}
+
+	outer_node_idx := cursor.path[len(cursor.path)-1]
+	should_newline := (node.tag!=.newline||siblings!=outer_siblings)&& (
+		outer_node_idx==len(outer_siblings)-1 ||
+		outer_siblings[outer_node_idx+1].tag==.newline)
+
+	if should_newline {
+		nl : CodeNode
+		nl.tag = .newline
+		inject_at(outer_siblings, outer_node_idx+1, nl)
+		cursor.path[len(cursor.path)-1] = outer_node_idx+1
+		cursor.idx=0
+
+	}
+}
+
 cursor_to_parent :: proc(cursor: ^Cursor) {
 	rp.slice_pop(&cursor.path)
 	if len(cursor.path)==0 {
@@ -922,25 +1000,27 @@ cursor_delete_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		if cursor.place == .after {
 			cursor.idx = len(token.text) // move left
 
-		} else if cursor.idx==1 && len(token.text)==1 { // delete the node
-			codenode_remove(editor, node, cursor)
-			if token.prefix {
-				cursor_move_right(editor, cursor)
-			}
-
 		} else if cursor.idx > 0 {
 			// delete a char
 			text := &node.token.text
 			text_idx := cursor.idx
 			_, size := utf8.decode_last_rune(text[:text_idx])
-			text2 := make([]u8, len(text)-size)
-			copy(text2, text[:cursor.idx-size])
-			if cursor.idx < len(text) {
-				copy(text2[cursor.idx-size:], text[cursor.idx:])
+
+			if len(token.text)==size { // delete the node
+				codenode_remove(editor, node, cursor)
+				if token.prefix {
+					cursor_move_right(editor, cursor)
+				}
+			} else {
+				text2 := make([]u8, len(text)-size)
+				copy(text2, text[:cursor.idx-size])
+				if cursor.idx < len(text) {
+					copy(text2[cursor.idx-size:], text[cursor.idx:])
+				}
+				delete(text^)
+				text^ = text2
+				cursor.idx -= size
 			}
-			delete(text^)
-			text^ = text2
-			cursor.idx -= size
 
 		} else if cursor.idx==0 { // delete before
 			node_idx := path[len(path)-1]
@@ -1038,18 +1118,20 @@ cursor_move_up :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 			char_count := -1
 			for line, i in lines {
 				char_count += 1
-				line_text := line.text
 				text_idx := cursor.idx-1-char_count
+				line_text := line.text
+				char_count += len(line_text)
 				if 0 <= text_idx && text_idx <= len(line_text) {
 					pixel_offset := measure_text_width(font, line_text[:text_idx])
 					if i>0 {
 						target_line_text := transmute([]u8) lines[i-1].text
 						target_line_idx := get_offset_at_coord(font, target_line_text, pixel_offset)
 						cursor.idx -= 1+text_idx+(len(target_line_text)-target_line_idx)
+					} else {
+						cursor.idx = 1
 					}
 					break
 				}
-				char_count += len(line_text)
 			}
 			if cursor.idx==char_count+2 {
 				break
@@ -1082,22 +1164,26 @@ cursor_move_down :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 			font := editor.font
 			lines := node.string.lines
 			char_count := -1
-			for line, i in lines {
+			i : int
+			for line, i_ in lines {
+				i = i_
 				char_count += 1
-				line_text := line.text
 				text_idx := cursor.idx-1-char_count
+				line_text := line.text
+				char_count += len(line_text)
 				if 0 <= text_idx && text_idx <= len(line_text) {
 					pixel_offset := measure_text_width(font, line_text[:text_idx])
 					if i<len(lines)-1 {
 						target_line_text := transmute([]u8) lines[i+1].text
 						target_line_idx := get_offset_at_coord(font, target_line_text, pixel_offset)
 						cursor.idx += 1+target_line_idx+(len(line_text)-text_idx)
+					} else {
+						cursor.idx = 1+char_count
 					}
 					break
 				}
-				char_count += len(line_text)
 			}
-			if cursor.idx==char_count+2 {
+			if cursor.idx==char_count+2 && i==len(lines)-1{
 				break
 			}
 		} else {
@@ -1208,6 +1294,8 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 					region.from=region.to
 				}
 			}
+		case:
+			handled = false
 		}
 	} else if mods=={.control} {
 		#partial switch key {
@@ -1220,6 +1308,8 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 			if !ok {
 				fmt.println("failed to write file")
 			}
+		case:
+			handled = false
 		}
 	}
 
@@ -1452,6 +1542,11 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 		is_inserting_macro := len(path)==0 || cursor.idx==last_idx_of_node(node) || is_inserting_in_gap || is_inserting_first_child
 
 		defer region.from=region.to
+
+		if ch==';' {
+			cursor_move_out_to_insert_newline(editor, cursor)
+			return
+		}
 		
 		// Insert collection
 		try_insert_collection: {

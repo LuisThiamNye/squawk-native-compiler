@@ -338,7 +338,7 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 	case WM_KEYDOWN:
 		handled := event_keydown(window, {key=auto_cast wparam})
 		if handled {InvalidateRect(hwnd, nil, false)}
-		return cast(int) !handled
+		if handled {return 0}
 	case WM_KEYUP:
 		break
 	case WM_CHAR:
