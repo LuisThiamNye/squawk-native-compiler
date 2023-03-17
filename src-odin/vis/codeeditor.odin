@@ -291,6 +291,8 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 				constantP := c0==':' || ('0' <= c0 && c0 <= '9') || text=="nil" || text=="false" || text=="true"
 				if constantP {
 					paint_set_colour(paint, constants_colour)
+				} else if node.token.prefix {
+					paint_set_colour(paint, bracket_colour)
 				} else {
 					paint_set_colour(paint, 0xFF000000)
 				}
@@ -643,6 +645,7 @@ cursor_move_right :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 			}
 		} else if len(path)>0 {
 			zip := get_codezip_at_path(editor, path)
+			defer delete_codezip(zip)
 			codezip_to_parent(&zip)
 			if zip.node != nil {
 				delete(cursor.path)
@@ -730,6 +733,7 @@ cursor_move_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 			cursor.idx = last_idx_of_node(target_node)
 		} else if len(path)>0 {
 			zip := get_codezip_at_path(editor, path)
+			defer delete_codezip(zip)
 			codezip_to_parent(&zip)
 			delete(cursor.path)
 			if zip.node != nil {
@@ -747,6 +751,121 @@ cursor_move_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 	}
 }
 
+cursor_move_right_token_end :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
+	node := get_node_at_path(editor, path)
+	if node==nil {
+		if len(editor.roots)>0 {
+			cursor_path_append(cursor, 0)
+			cursor.idx=0
+		}
+	}
+
+	switch node.tag {
+
+	case .newline: break
+
+	case .token:
+		token := node.token
+		if cursor.place==.after || cursor.idx == len(token.text) {
+			break
+		} else {
+			cursor.idx = len(token.text)
+		}
+		return
+
+	case .string:
+		if cursor.place==.after || cursor.idx == last_idx_of_node(node) {
+			break
+		} else {
+			cursor.idx = last_idx_of_node(node)
+		}
+		return
+
+	case .coll: break
+	}
+	// go to next node
+	for {
+		zip := get_codezip_at_path(editor, path)
+		defer delete_codezip(zip)
+		delete(cursor.path)
+		if zip.node!=nil&&zip.node.tag==.coll&&
+		(cursor.coll_place==.close_pre||cursor.coll_place==.close_post||
+			cursor.place==.after) {
+			codezip_to_next(&zip)
+		} else {
+			codezip_to_next_in(&zip)
+		}
+		for {
+			if zip.node==nil {
+				cursor.path = make(type_of(cursor.path), 1)
+				cursor.path[0]=len(editor.roots)-1
+				cursor.idx = last_idx_of_node(&editor.roots[cursor.path[0]])
+				return
+			} else if zip.node.tag==.token || zip.node.tag==.string {
+				cursor.path = codezip_path(zip)
+				cursor.idx = last_idx_of_node(zip.node)
+				return
+			}
+			codezip_to_next_in(&zip)
+		}
+	}
+}
+
+cursor_move_left_token_start :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
+	node := get_node_at_path(editor, path)
+	if node==nil {return}
+
+	switch node.tag {
+
+	case .newline: break
+
+	case .token:
+		token := node.token
+		if cursor.place==.before || cursor.idx == 0 {
+			break
+		} else {
+			cursor.idx = 0
+		}
+		return
+
+	case .string:
+		if cursor.place==.before||cursor.idx==0{
+			break
+		} else {
+			cursor.idx = 0
+		}
+		return
+
+	case .coll: break
+	}
+	// go to next node
+	for {
+		zip := get_codezip_at_path(editor, path)
+		defer delete_codezip(zip)
+		if zip.node!=nil&&zip.node.tag==.coll&&
+		(cursor.coll_place==.close_pre||cursor.coll_place==.close_post||
+			cursor.place==.after) {
+			codezip_to_prev_in(&zip)
+		} else {
+			codezip_to_prev(&zip)
+		}
+		delete(cursor.path)
+		for {
+			if zip.node==nil {
+				cursor.path = make(type_of(cursor.path), 1)
+				cursor.path[0]=0
+				cursor.idx = 0
+				return
+			} else if zip.node.tag==.token || zip.node.tag==.string {
+				cursor.path = codezip_path(zip)
+				cursor.idx = 0
+				return
+			}
+			codezip_to_prev_in(&zip)
+		}
+	}
+}
+
 cursor_to_parent :: proc(cursor: ^Cursor) {
 	rp.slice_pop(&cursor.path)
 	if len(cursor.path)==0 {
@@ -761,7 +880,6 @@ codenode_remove :: proc(editor: ^CodeEditor, node: ^CodeNode, cursor: ^Cursor) {
 	node_idx := path[len(path)-1]
 
 	// move cursor away
-	zip := get_codezip_at_path(editor, cursor.path)
 	sibling_idx := path[len(path)-1]
 	if sibling_idx > 0 { // curor moves left
 		cursor.path[len(path)-1] -= 1
@@ -910,15 +1028,16 @@ cursor_move_up :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 	case .newline: break
 
 	case .token:
-		return
+		// return
 
 	case .string:
 		text := node.string.text
-		if cursor.idx >= 0 {
+		if cursor.idx > 0 {
 			font := editor.font
 			lines := node.string.lines
-			char_count := 0
+			char_count := -1
 			for line, i in lines {
+				char_count += 1
 				line_text := line.text
 				text_idx := cursor.idx-1-char_count
 				if 0 <= text_idx && text_idx <= len(line_text) {
@@ -930,14 +1049,21 @@ cursor_move_up :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 					}
 					break
 				}
-				char_count += len(line_text)+1
+				char_count += len(line_text)
 			}
+			if cursor.idx==char_count+2 {
+				break
+			}
+		} else {
+			break
 		}
 		return
 
 	case .coll:
-		return
+		// return
 	}
+
+	cursor_move_left_token_start(editor, cursor)
 }
 
 cursor_move_down :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
@@ -948,15 +1074,16 @@ cursor_move_down :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 	case .newline: break
 
 	case .token:
-		return
+		// return
 
 	case .string:
 		text := node.string.text
-		if cursor.idx >= 0 {
+		if cursor.idx > 0 {
 			font := editor.font
 			lines := node.string.lines
-			char_count := 0
+			char_count := -1
 			for line, i in lines {
+				char_count += 1
 				line_text := line.text
 				text_idx := cursor.idx-1-char_count
 				if 0 <= text_idx && text_idx <= len(line_text) {
@@ -968,14 +1095,21 @@ cursor_move_down :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 					}
 					break
 				}
-				char_count += len(line_text)+1
+				char_count += len(line_text)
 			}
+			if cursor.idx==char_count+2 {
+				break
+			}
+		} else {
+			break
 		}
 		return
 
 	case .coll:
-		return
+		// return
 	}
+
+	cursor_move_right_token_end(editor, cursor)
 }
 
 last_idx_of_node :: proc(node: ^CodeNode) -> int {
@@ -1456,6 +1590,10 @@ CodeNode_Zipper :: struct {
 	},
 }
 
+delete_codezip :: proc(zip: CodeNode_Zipper) {
+	delete(zip.stack)
+}
+
 get_codezip_at_path :: proc(editor: ^CodeEditor, path: []int) -> (zip: CodeNode_Zipper) {
 	if len(path)==0 {return}
 	level := 0
@@ -1508,8 +1646,7 @@ codezip_to_next_in :: proc(using zip: ^CodeNode_Zipper) {
 				codezip_to_next(zip)
 				return
 			} else {
-				child := &children[0]
-				node = child
+				node = &children[0]
 				level += 1
 				append_nothing(&stack)
 				zip.stack[level].idx = 0
@@ -1535,6 +1672,32 @@ codezip_to_prev :: proc(using zip: ^CodeNode_Zipper) {
 			sf.idx -= 1
 			node = &sf.nodes[sf.idx]
 			return
+		}
+	}
+}
+
+codezip_to_prev_in :: proc(using zip: ^CodeNode_Zipper) {
+	level := len(stack)-1
+	for {
+		sf := &stack[level]
+		switch node.tag {
+		case .token, .string, .newline:
+			codezip_to_prev(zip)
+			return
+		case .coll:
+			children := &node.coll.children
+			if len(children)==0 {
+				codezip_to_prev(zip)
+				return
+			} else {
+				last_idx := len(children)-1
+				node = &children[last_idx]
+				level += 1
+				append_nothing(&stack)
+				zip.stack[level].idx = last_idx
+				zip.stack[level].nodes = children[:]
+				return
+			}
 		}
 	}
 }
