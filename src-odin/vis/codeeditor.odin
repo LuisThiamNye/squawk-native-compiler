@@ -172,9 +172,6 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	{ // scroll
 		using smooth_scroll
 
-		if scroll_offset.x>0 {scroll_offset.x=0}
-		if scroll_offset.y>0 {scroll_offset.y=0}
-
 		pos : [2]i32
 		current_time := time.to_unix_nanoseconds(time.now())/1e6
 		if current_time > latest_time+auto_cast duration { // animation done
@@ -205,29 +202,41 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	}
 
 	update_contents_rect_to_scroll :: proc(using editor: ^CodeEditor) {
+		// If the contents rect is found somewhere it shouldn't be,
+		// then snap it back to a valid position and stop scrolling
 		d := contents_rect.coords-view_rect.coords
 		dl := d[0]; dt := d[1]; dr := d[2]; db := d[3]
 		if dr-dl<0 { // if contents fit, do not scroll
 			contents_rect.right -= dl
 			contents_rect.left -= dl
 			scroll_offset.x = 0
-			// smooth_scroll.duration = 0
+			smooth_scroll.start_pos.x=0
 		} else if dr<0 { // ensure contents fill the view
 			contents_rect.right -= dr
 			contents_rect.left -= dr
-			scroll_offset.x -= dr
-			// smooth_scroll.duration = 0
+			scroll_offset.x = contents_rect.left
+			smooth_scroll.start_pos.x = scroll_offset.x
+		} else if dl>0 {
+			contents_rect.right -= dl
+			contents_rect.left -= dl
+			scroll_offset.x = 0
+			smooth_scroll.start_pos.x=0
 		}
 		if db-dt<0 { // if contents fit, do not scroll
 			contents_rect.bottom -= dt
 			contents_rect.top -= dt
 			scroll_offset.y = 0
-			// smooth_scroll.duration = 0
+			smooth_scroll.start_pos.y=0
 		} else if db<0 { // ensure contents fill the view
 			contents_rect.bottom -= db
 			contents_rect.top -= db
-			scroll_offset.y -= db
-			// smooth_scroll.duration = 0
+			scroll_offset.y = contents_rect.top
+			smooth_scroll.start_pos.y = scroll_offset.y
+		} else if dt>0 {
+			contents_rect.bottom -= dt
+			contents_rect.top -= dt
+			scroll_offset.y = 0
+			smooth_scroll.start_pos.y=0
 		}
 	}
 
@@ -2138,17 +2147,10 @@ codeeditor_event_mouse_scroll :: proc(window: ^Window, using editor: ^CodeEditor
 			prev_event_dts[1] = latest_delta
 
 			new_duration = clamp(average_delta*interval_ratio, min_duration, max_duration)
-			// fmt.println("duration", duration, "delta", latest_delta, "velocity", velocity.y)
 		}
 	}
 
 	new_scroll_offset := scroll_offset + {dx, dy}
-	new_scroll_offset.x = math.min(0, new_scroll_offset.x)
-	new_scroll_offset.y = math.min(0, new_scroll_offset.y)
-	if new_scroll_offset==scroll_offset && (current_time+auto_cast new_duration > latest_time+auto_cast duration) {
-		// abort if the end time increases but the destination is unchanged
-		return
-	}
 
 	velocity: [2]i32 // pixels per second
 	{
@@ -2232,7 +2234,7 @@ get_bezier_t_for_x :: proc(x: f32, p1: f32, p2: f32) -> f32 {
 
 	grad := calc_bezier_grad(t, p1, p2)
 	if grad >= 0.02 { // Newton-Raphson method
-		n_its :: 4
+		n_its :: 5
 		min_grad :: 0.02
 		for i in 0..<n_its {
 			err := calc_bezier(t, p1, p2)-x
