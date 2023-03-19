@@ -10,6 +10,9 @@ import "core:fmt"
 import "core:mem"
 import "core:math"
 import "core:strings"
+import "core:time"
+import "core:os"
+import "core:slice"
 
 import sk "../skia"
 import rp "../rope"
@@ -105,10 +108,18 @@ CodeEditor :: struct {
 	roots: [dynamic]CodeNode,
 	font: sk.SkFont, // one frame lifetime
 	file_path: string,
-}
 
-import "core:os"
-import "core:slice"
+	view_rect: Rect_i32,
+	contents_rect: Rect_i32,
+	scroll_offset: [2]i32,
+	smooth_scroll: struct {
+		latest_time: i64, // ms
+		prev_event_dts: [2]u16, // ms, newest from right to left; times between scroll events
+		duration: u16, // ms
+		start_pos: [2]i32, // relative to view_rect
+		control_point1s: [2][2]f32,
+	},
+}
 
 codeeditor_refresh_from_file :: proc(editor: ^CodeEditor) {
 	text, ok := os.read_entire_file_from_filename(editor.file_path)
@@ -152,7 +163,82 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	paint := make_paint()
 
 	scale := window.graphics.scale
-	origin := [2]f32{10, 10}
+
+	view_rect.left = 0
+	view_rect.top = 0
+	view_rect.right = window.graphics.width
+	view_rect.bottom = window.graphics.height
+
+	{ // scroll
+		using smooth_scroll
+
+		if scroll_offset.x>0 {scroll_offset.x=0}
+		if scroll_offset.y>0 {scroll_offset.y=0}
+
+		pos : [2]i32
+		current_time := time.to_unix_nanoseconds(time.now())/1e6
+		if current_time > latest_time+auto_cast duration { // animation done
+			pos = scroll_offset
+		} else {
+			p1s := control_point1s
+			p2 := scroll_control_point2
+			k := f32(current_time-latest_time)/auto_cast duration
+
+			tx := get_bezier_t_for_x(k, p1s.x.x, p2.x)
+			ty := get_bezier_t_for_x(k, p1s.y.x, p2.x)
+			bx := calc_bezier(tx, control_point1s.x.y, p2.y)
+			by := calc_bezier(ty, control_point1s.y.y, p2.y)
+
+			pos.x = start_pos.x + i32(math.round(bx*f32(scroll_offset.x-start_pos.x)))
+			pos.y = start_pos.y + i32(math.round(by*f32(scroll_offset.y-start_pos.y)))
+
+			request_frame(window)
+
+		}
+
+		dx := view_rect.left+pos.x-contents_rect.left
+		contents_rect.left += dx
+		contents_rect.right += dx
+		dy := view_rect.top+pos.y-contents_rect.top
+		contents_rect.top += dy
+		contents_rect.bottom += dy
+	}
+
+	update_contents_rect_to_scroll :: proc(using editor: ^CodeEditor) {
+		d := contents_rect.coords-view_rect.coords
+		dl := d[0]; dt := d[1]; dr := d[2]; db := d[3]
+		if dr-dl<0 { // if contents fit, do not scroll
+			contents_rect.right -= dl
+			contents_rect.left -= dl
+			scroll_offset.x = 0
+			// smooth_scroll.duration = 0
+		} else if dr<0 { // ensure contents fill the view
+			contents_rect.right -= dr
+			contents_rect.left -= dr
+			scroll_offset.x -= dr
+			// smooth_scroll.duration = 0
+		}
+		if db-dt<0 { // if contents fit, do not scroll
+			contents_rect.bottom -= dt
+			contents_rect.top -= dt
+			scroll_offset.y = 0
+			// smooth_scroll.duration = 0
+		} else if db<0 { // ensure contents fill the view
+			contents_rect.bottom -= db
+			contents_rect.top -= db
+			scroll_offset.y -= db
+			// smooth_scroll.duration = 0
+		}
+	}
+
+	update_contents_rect_to_scroll(code_editor)
+
+	padding : Rect_i32
+	padding.coords = {10, 10, 10, 10}
+	origin : [2]f32
+	origin.x = cast(f32) (padding.left + contents_rect.left)
+	origin.y = cast(f32) (padding.top + contents_rect.top)
+
 
 
 	font_size : f32 = 15*scale
@@ -175,7 +261,7 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 
 
 	for region in &regions {
-		dbg_println_cursor(region.to)
+		// dbg_println_cursor(region.to)
 		for cursor in &region.cursors {
 			if len(cursor.path)==0 && len(code_editor.roots)>0 && code_editor.roots[0].tag!=.newline {
 				cursor_path_append(&cursor, 0)
@@ -202,7 +288,10 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	blob_curly_close := make_textblob_from_text("}", font)
 	blob_double_quote := make_textblob_from_text("\"", font)
 
+
 	{ // Draw nodes
+		max_x : f32 = 0
+
 		Frame_DrawNode :: struct{
 			node_idx: int,
 			coll: struct{
@@ -220,6 +309,8 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 		y := origin.y
 		left_start_x := x
 		for {
+			if x>max_x {max_x=x}
+			
 			if node_i>0 {
 				left_node := &siblings[node_i-1]
 				if .insert_after in left_node.flags {x += space_width}
@@ -419,7 +510,11 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 				node_i += 1
 			}
 		}
+		contents_rect.right = (auto_cast max_x + padding.right)
+		contents_rect.bottom = (
+			auto_cast y + auto_cast line_height + padding.bottom)
 	}
+
 
 	{ // Draw cursor
 		cursor_width := 2*scale
@@ -529,6 +624,12 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 				canvas_draw_rect(cnv, sk_rect(l=x-dl, r=x+dr, t=y, b=y+line_height), paint)
 			}
 		}
+	}
+
+	old_contents := contents_rect
+	update_contents_rect_to_scroll(code_editor)
+	if old_contents != contents_rect {
+		request_frame(window)
 	}
 }
 
@@ -757,6 +858,7 @@ cursor_move_right_token_end :: proc(editor: ^CodeEditor, using cursor: ^Cursor) 
 		if len(editor.roots)>0 {
 			cursor_path_append(cursor, 0)
 			cursor.idx=0
+			node = &editor.roots[0]
 		} else {
 			return
 		}
@@ -786,30 +888,28 @@ cursor_move_right_token_end :: proc(editor: ^CodeEditor, using cursor: ^Cursor) 
 	case .coll: break
 	}
 	// go to next node
+	zip := get_codezip_at_path(editor, path)
+	defer delete_codezip(zip)
+	delete(cursor.path)
+	if zip.node!=nil&&zip.node.tag==.coll&&
+	(cursor.coll_place==.close_pre||cursor.coll_place==.close_post||
+		cursor.place==.after) {
+		codezip_to_next(&zip)
+	} else {
+		codezip_to_next_in(&zip)
+	}
 	for {
-		zip := get_codezip_at_path(editor, path)
-		defer delete_codezip(zip)
-		delete(cursor.path)
-		if zip.node!=nil&&zip.node.tag==.coll&&
-		(cursor.coll_place==.close_pre||cursor.coll_place==.close_post||
-			cursor.place==.after) {
-			codezip_to_next(&zip)
-		} else {
-			codezip_to_next_in(&zip)
+		if zip.node==nil {
+			cursor.path = make(type_of(cursor.path), 1)
+			cursor.path[0]=len(editor.roots)-1
+			cursor.idx = last_idx_of_node(&editor.roots[cursor.path[0]])
+			return
+		} else if zip.node.tag==.token || zip.node.tag==.string {
+			cursor.path = codezip_path(zip)
+			cursor.idx = last_idx_of_node(zip.node)
+			return
 		}
-		for {
-			if zip.node==nil {
-				cursor.path = make(type_of(cursor.path), 1)
-				cursor.path[0]=len(editor.roots)-1
-				cursor.idx = last_idx_of_node(&editor.roots[cursor.path[0]])
-				return
-			} else if zip.node.tag==.token || zip.node.tag==.string {
-				cursor.path = codezip_path(zip)
-				cursor.idx = last_idx_of_node(zip.node)
-				return
-			}
-			codezip_to_next_in(&zip)
-		}
+		codezip_to_next_in(&zip)
 	}
 }
 
@@ -841,31 +941,220 @@ cursor_move_left_token_start :: proc(editor: ^CodeEditor, using cursor: ^Cursor)
 	case .coll: break
 	}
 	// go to next node
+	zip := get_codezip_at_path(editor, path)
+	defer delete_codezip(zip)
+	if zip.node!=nil&&zip.node.tag==.coll&&
+	(cursor.coll_place==.close_pre||cursor.coll_place==.close_post||
+		cursor.place==.after) {
+		codezip_to_prev_in(&zip)
+	} else {
+		codezip_to_prev(&zip)
+	}
+	delete(cursor.path)
 	for {
-		zip := get_codezip_at_path(editor, path)
-		defer delete_codezip(zip)
-		if zip.node!=nil&&zip.node.tag==.coll&&
-		(cursor.coll_place==.close_pre||cursor.coll_place==.close_post||
-			cursor.place==.after) {
-			codezip_to_prev_in(&zip)
-		} else {
-			codezip_to_prev(&zip)
+		if zip.node==nil {
+			cursor.path = make(type_of(cursor.path), 1)
+			cursor.path[0]=0
+			cursor.idx = 0
+			return
+		} else if zip.node.tag==.token || zip.node.tag==.string {
+			cursor.path = codezip_path(zip)
+			cursor.idx = 0
+			return
 		}
-		delete(cursor.path)
-		for {
-			if zip.node==nil {
-				cursor.path = make(type_of(cursor.path), 1)
-				cursor.path[0]=0
-				cursor.idx = 0
-				return
-			} else if zip.node.tag==.token || zip.node.tag==.string {
-				cursor.path = codezip_path(zip)
-				cursor.idx = 0
-				return
-			}
-			codezip_to_prev_in(&zip)
+		codezip_to_prev_in(&zip)
+	}
+}
+
+cursor_move_right_sibling :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
+	node := get_node_at_path(editor, path)
+	if node==nil {
+		if len(editor.roots)>0 {
+			cursor_path_append(cursor, 0)
+			cursor.idx=0
+			node = &editor.roots[0]
+		} else {
+			return
 		}
 	}
+
+	switch node.tag {
+
+	case .newline: break
+
+	case .token:
+		token := node.token
+		if cursor.place==.after || cursor.idx == len(token.text) {
+			if token.prefix {
+				cursor.path[len(path)-1]+=1
+				cursor.idx = 0
+				node = get_node_at_path(editor, path)
+			}
+			break
+		} else {
+			cursor.idx = len(token.text)
+		}
+		return
+
+	case .string:
+		if cursor.place==.after || cursor.idx == last_idx_of_node(node) {
+			break
+		} else {
+			cursor.idx = last_idx_of_node(node)
+		}
+		return
+
+	case .coll: break
+	}
+	// go to next node
+	zip := get_codezip_at_path(editor, path)
+	defer delete_codezip(zip)
+
+	siblings := codezip_siblings(zip)
+	node_idx := path[len(path)-1]
+	if node_idx==len(siblings)-1 { // last child
+		if node.tag==.coll {
+			if cursor.coll_place != .close_post {
+				cursor.coll_place=.close_post
+			}
+			return
+		} else if node.tag==.token {
+			return
+		} else { return }
+	}
+
+	delete(cursor.path)
+	if zip.node!=nil && zip.node.tag==.coll && cursor.coll_place==.open_post {
+		codezip_to_next_in(&zip)
+	} else {
+		codezip_to_next(&zip)
+	}
+	for {
+		if zip.node==nil {
+			cursor.path = make(type_of(cursor.path), 1)
+			cursor.path[0]=len(editor.roots)-1
+			cursor.idx = last_idx_of_node(&editor.roots[cursor.path[0]])
+			return
+		} else if zip.node.tag != .newline {
+			if zip.node.tag==.coll {
+				cursor.path = codezip_path(zip)
+				cursor.idx = 0
+			} else {
+				cursor.path = codezip_path(zip)
+				cursor.idx = last_idx_of_node(zip.node)
+			}
+			return
+		}
+		codezip_to_next(&zip)
+	}
+}
+
+cursor_move_left_sibling :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
+	node := get_node_at_path(editor, path)
+	if node==nil {return}
+
+	switch node.tag {
+
+	case .newline: break
+
+	case .token:
+		token := node.token
+		if cursor.place==.before || cursor.idx == 0 {
+			break
+		} else {
+			cursor.idx = 0
+		}
+		return
+
+	case .string:
+		if cursor.place==.before||cursor.idx==0{
+			break
+		} else {
+			cursor.idx = 0
+		}
+		return
+
+	case .coll:
+		if cursor.coll_place==.close_post {
+			cursor.coll_place = .open_pre
+			if node.coll.prefix {cursor_move_left(editor, cursor)}
+			return
+		}
+	}
+	// go to next node
+	zip := get_codezip_at_path(editor, path)
+	defer delete_codezip(zip)
+
+	node_idx := path[len(path)-1]
+
+	if node_idx==0 && node.tag != .newline {
+		return
+	}
+
+	if zip.node!=nil && zip.node.tag==.coll && cursor.coll_place==.close_pre {
+		codezip_to_prev_in(&zip)
+	} else {
+		codezip_to_prev(&zip)
+	}
+	delete(cursor.path)
+	for {
+		if zip.node==nil {
+			cursor.path = make(type_of(cursor.path), 1)
+			cursor.path[0]=0
+			cursor.idx = 0
+			cursor_move_left(editor, cursor)
+			return
+		} else if zip.node.tag != .newline {
+			if zip.node.tag==.coll && zip.node.coll.prefix {
+				codezip_to_prev(&zip)
+			}
+			cursor.path = codezip_path(zip)
+			cursor.idx = 0
+			return
+		}
+		codezip_to_prev(&zip)
+	}
+}
+
+cursor_move_to_start_of_coll :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
+	node := get_node_at_path(editor, path)
+	if node==nil {return}
+
+	if node.tag==.string {
+		text_idx := cursor.idx-1
+		if text_idx >= 0 {
+			c := 0
+			c2 := 0
+			for line in node.string.lines {
+				c2 += 1+len(line.text)
+				if text_idx < c2 {
+					break
+				}
+				c = c2
+			}
+			if text_idx < c2 {
+				cursor.idx = 1+c
+				return
+			}
+		}
+	}
+
+	zip := get_codezip_at_path(editor, path)
+	defer delete_codezip(zip)
+	codezip_to_parent(&zip)
+	parent := zip.node
+	if parent == nil {
+		delete(path)
+		cursor.path = make(type_of(path), 1)
+		cursor.path[0] = 0
+	} else {
+		if cursor.path[len(path)-1]==0 && cursor.idx==0 {
+			delete(path)
+			cursor.path = codezip_path(zip)
+		}
+		cursor.path[len(path)-1]=0
+	}
+	cursor.idx = 0
 }
 
 cursor_move_out_to_insert_newline :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
@@ -1145,57 +1434,48 @@ cursor_move_up :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 		// return
 	}
 
-	cursor_move_left_token_start(editor, cursor)
+	cursor_move_left_sibling(editor, cursor)
 }
 
 cursor_move_down :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 	node := get_node_at_path(editor, path)
-	if node==nil{return}
-	switch node.tag{
-
-	case .newline: break
-
-	case .token:
-		// return
-
-	case .string:
-		text := node.string.text
-		if cursor.idx > 0 {
-			font := editor.font
-			lines := node.string.lines
-			char_count := -1
-			i : int
-			for line, i_ in lines {
-				i = i_
-				char_count += 1
-				text_idx := cursor.idx-1-char_count
-				line_text := line.text
-				char_count += len(line_text)
-				if 0 <= text_idx && text_idx <= len(line_text) {
-					pixel_offset := measure_text_width(font, line_text[:text_idx])
-					if i<len(lines)-1 {
-						target_line_text := transmute([]u8) lines[i+1].text
-						target_line_idx := get_offset_at_coord(font, target_line_text, pixel_offset)
-						cursor.idx += 1+target_line_idx+(len(line_text)-text_idx)
-					} else {
-						cursor.idx = 1+char_count
+	try_specific: {
+		if node != nil && node.tag==.string{
+			text := node.string.text
+			if cursor.idx > 0 {
+				font := editor.font
+				lines := node.string.lines
+				char_count := -1
+				i : int
+				for line, i_ in lines {
+					i = i_
+					char_count += 1
+					text_idx := cursor.idx-1-char_count
+					line_text := line.text
+					char_count += len(line_text)
+					if 0 <= text_idx && text_idx <= len(line_text) {
+						pixel_offset := measure_text_width(font, line_text[:text_idx])
+						if i<len(lines)-1 {
+							target_line_text := transmute([]u8) lines[i+1].text
+							target_line_idx := get_offset_at_coord(font, target_line_text, pixel_offset)
+							cursor.idx += 1+target_line_idx+(len(line_text)-text_idx)
+						} else {
+							cursor.idx = 1+char_count
+						}
+						break
 					}
-					break
 				}
+				if cursor.idx==char_count+2 && i==len(lines)-1{
+					break try_specific
+				}
+			} else {
+				break try_specific
 			}
-			if cursor.idx==char_count+2 && i==len(lines)-1{
-				break
-			}
-		} else {
-			break
+			return
 		}
-		return
-
-	case .coll:
-		// return
 	}
 
-	cursor_move_right_token_end(editor, cursor)
+	cursor_move_right_sibling(editor, cursor)
 }
 
 last_idx_of_node :: proc(node: ^CodeNode) -> int {
@@ -1251,6 +1531,13 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 			for region in &regions {
 				if region_is_point(region) {
 					cursor_delete_left(editor, &region.to)
+					region.from=region.to
+				}
+			}
+		case .home:
+			for region in &regions {
+				if region_is_point(region) {
+					cursor_move_to_start_of_coll(editor, &region.to)
 					region.from=region.to
 				}
 			}
@@ -1689,6 +1976,10 @@ delete_codezip :: proc(zip: CodeNode_Zipper) {
 	delete(zip.stack)
 }
 
+codezip_siblings :: proc(using zip: CodeNode_Zipper) -> []CodeNode {
+	return stack[len(stack)-1].nodes
+}
+
 get_codezip_at_path :: proc(editor: ^CodeEditor, path: []int) -> (zip: CodeNode_Zipper) {
 	if len(path)==0 {return}
 	level := 0
@@ -1818,4 +2109,157 @@ codezip_path :: proc(using zip: CodeNode_Zipper) -> []int {
 
 codezip_idx :: proc(using zip: CodeNode_Zipper) -> int {
 	return stack[len(stack)-1].idx
+}
+
+codeeditor_event_mouse_scroll :: proc(window: ^Window, using editor: ^CodeEditor, dx: i32, dy: i32) {
+	current_time := time.to_unix_nanoseconds(time.now())/1e6
+
+	using smooth_scroll
+
+	already_scrolling := current_time<=latest_time+auto_cast duration
+
+	// determine new duration
+	new_duration : type_of(duration)
+	{
+		// interval_ratio :: 200 // default for firefox general.smoothScroll.durationToIntervalRatio
+		interval_ratio :: 50
+		min_duration :: 100
+		max_duration :: 150
+
+		if !already_scrolling { // not scrolling
+			new_duration = max_duration
+			max_delta := u16(max_duration/interval_ratio)
+			prev_event_dts[0]=max_delta
+			prev_event_dts[1]=max_delta
+		} else { // currently scrolling
+			latest_delta := u16(current_time-latest_time)
+			average_delta := (prev_event_dts[0]+prev_event_dts[1]+latest_delta)/3
+			prev_event_dts[0] = prev_event_dts[1]
+			prev_event_dts[1] = latest_delta
+
+			new_duration = clamp(average_delta*interval_ratio, min_duration, max_duration)
+			// fmt.println("duration", duration, "delta", latest_delta, "velocity", velocity.y)
+		}
+	}
+
+	new_scroll_offset := scroll_offset + {dx, dy}
+	new_scroll_offset.x = math.min(0, new_scroll_offset.x)
+	new_scroll_offset.y = math.min(0, new_scroll_offset.y)
+	if new_scroll_offset==scroll_offset && (current_time+auto_cast new_duration > latest_time+auto_cast duration) {
+		// abort if the end time increases but the destination is unchanged
+		return
+	}
+
+	velocity: [2]i32 // pixels per second
+	{
+		progress := f32(current_time-latest_time)/auto_cast duration
+		if progress >= 1 {
+			velocity = {0, 0}
+		} else {
+			p2 := scroll_control_point2
+			p1s := control_point1s
+			x_t := get_bezier_t_for_x(progress, p1s.x.x, p2.x)
+			y_t := get_bezier_t_for_x(progress, p1s.y.x, p2.x)
+			x_grad := calc_bezier_grad(x_t, p1s.x, p2)
+			y_grad := calc_bezier_grad(y_t, p1s.y, p2)
+			get_velocity :: #force_inline proc(grad: [2]f32, multiplier: f32) -> i32 {
+				dt := grad.x
+				dr := grad.y
+				if dt==0 {
+					return dr>=0 ? max(i32) : min(i32)
+				}
+				// pixels/ms -> pixels/s
+				return i32(math.round(dr/dt * multiplier * 1000))
+			}
+			velocity.x = get_velocity(x_grad, f32(scroll_offset.x - start_pos.x)/f32(duration))
+			velocity.y = get_velocity(y_grad, f32(scroll_offset.y - start_pos.y)/f32(duration))
+		}
+	}
+
+	get_control_point1 :: #force_inline proc(total_distance: i32, #any_int duration: int, velocity: i32) -> (p1: [2]f32) {
+		// Ensure that initial velocity equals the current velocity for smooth experience:
+		// initial velocity = initialrve (normalised), grad0  *  scaling factor
+		// maxe the initial gradient:
+		if total_distance==0 {return {0,0}}
+		grad0 := (f32(velocity)/1000) * (f32(duration) / f32(total_distance))
+		
+		// First control point p1 is (dt, dr) where dt and dr are normalised time and distance
+		// Thus the initial gradient grad0 = dr/dt
+		// For scroll_velocity_coeff to represent the distance |p1-p0| independent of current velocity,
+		// dt and dr must be points on a circle
+		p1.x = scroll_velocity_coeff / math.sqrt(1+grad0*grad0)
+		p1.y = p1.x * grad0
+		return 
+	}
+
+	// update the scroll destination
+	scroll_offset = new_scroll_offset
+	start_pos = contents_rect.coords.xy-view_rect.coords.xy
+	latest_time = current_time
+	duration = new_duration
+
+	control_point1s.x = get_control_point1((scroll_offset.x-start_pos.x), duration, velocity.x)
+	control_point1s.y = get_control_point1((scroll_offset.y-start_pos.y), duration, velocity.y)
+}
+
+// equivalent parameters to Firefox/Gecko's
+scroll_velocity_coeff :: 0.15 // default is 0.25 for general.smoothScroll.currentVelocityWeighting
+scroll_deceleration_coeff :: 0.4 // default is 0.4 for  general.smoothScroll.stopDecelerationWeighting
+
+scroll_control_point2 :: [2]f32{1-scroll_deceleration_coeff, 1}
+
+// also see keySplines https://www.w3.org/TR/smil-animation/
+// and https://www.desmos.com/calculator/wex6j3vcwb
+// start and end control points p0=(0,0) and p3=(1,1)
+// cubic Bézier curve
+
+// returns the point on the Bezier curve at t with control points p1, p2
+// p1 and p2 are either (x,y) points or the x or y components
+// ie returns x(t) when p1=x1, p2=x2
+calc_bezier :: proc(t: f32, p1: $P, p2: P) -> P {
+	// use Horner's method for optimal evaluation
+	return t*((3*p1) + t*((3*p2-6*p1) + t*(1-3*p2+3*p1)))
+}
+calc_bezier_grad :: proc(t: f32, p1: $P, p2: P) -> P {
+	return 3*p1 + t*((6*p2-12*p1) + t*(3-9*p2+9*p1))
+}
+
+// the curve is monotonically increasing from (0,0) to (1,1)
+get_bezier_t_for_x :: proc(x: f32, p1: f32, p2: f32) -> f32 {
+	if x==1 {return 1}
+
+	t := x // initial guess
+
+	grad := calc_bezier_grad(t, p1, p2)
+	if grad >= 0.02 { // Newton-Raphson method
+		n_its :: 4
+		min_grad :: 0.02
+		for i in 0..<n_its {
+			err := calc_bezier(t, p1, p2)-x
+			grad = calc_bezier_grad(t, p1, p2)
+			if grad==0 {break}
+			t -= err/grad
+		}
+
+	} else { // Binary search
+		max_err :: 0.0000001
+		max_its :: 10
+		t1 : f32 = 0
+		t2 : f32 = 1
+		n_its := 1
+		for {
+			err := calc_bezier(t, p1, p2)-x
+			if err>0 {
+				t2 = t
+			} else {
+				t1 = t
+			}
+			if math.abs(err)<=max_err || n_its==max_its {
+				break
+			}
+			t = (t1+t2)/2
+			n_its += 1
+		}
+	}
+	return t
 }

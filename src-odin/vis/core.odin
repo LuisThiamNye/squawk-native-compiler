@@ -13,6 +13,15 @@ Rect :: struct #raw_union {
 	using ltrb: sk.SkRect,
 	coords: [4]f32,
 }
+Rect_i32 :: struct #raw_union {
+	using ltrb: struct {
+		left: i32,
+		top: i32,
+		right: i32,
+		bottom: i32,
+	},
+	coords: [4]i32,
+}
 
 println :: fmt.println
 
@@ -164,6 +173,9 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 	window.latest_hwnd = hwnd
 	using window
 
+	// https://github.com/chromium/chromium/blob/72ceeed2ebcd505b8d8205ed7354e862b871995e/ui/events/blink/web_input_event_builders_win.cc#L331
+	scroll_pixels_per_line : f32 : 100/3
+
 	switch msg {
 	case WM_SETCURSOR:
 		cursor_area := lparam & 0xFFFF
@@ -267,7 +279,46 @@ handle_window_message :: proc "stdcall" (hwnd: win.HWND, msg: win.UINT,
 	case WM_MOUSELEAVE:
 		fmt.println("WE HAVE LEFT")
 	case WM_MOUSEWHEEL:
-		break
+		x := cast(int) cast(i16) lparam
+		y := lparam >> 16
+		graphics.mouse_pos = {x, y}
+
+		// keys_down := cast(i16) wparam
+		scroll_distance := i16(wparam >> 16)
+		nsteps := f32(scroll_distance)/WHEEL_DELTA
+		lines_per_step: win.UINT
+    	SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines_per_step, 0)
+
+    	handled : bool
+    	if lines_per_step>WHEEL_DELTA { // page scroll
+    		page_delta := nsteps>0 ? 1 : nsteps<0 ? -1 : 0
+    		dy := cast(int) graphics.height*page_delta
+			handled = event_mouse_scroll(window, 0, auto_cast dy)
+    	} else {
+    		nlines := nsteps * auto_cast lines_per_step
+    		dy := nlines * scroll_pixels_per_line * graphics.scale
+			handled = event_mouse_scroll(window, 0, auto_cast dy)
+    	}
+
+		if handled {InvalidateRect(hwnd, nil, false)}
+		return 0
+	case WM_MOUSEHWHEEL:
+		x := cast(int) cast(i16) lparam
+		y := lparam >> 16
+		graphics.mouse_pos = {x, y}
+
+		// keys_down := cast(i16) wparam
+		scroll_distance := i16(wparam >> 16)
+		nsteps := f32(scroll_distance)/WHEEL_DELTA
+		lines_per_step: win.UINT
+    	SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines_per_step, 0)
+
+		nlines := nsteps * auto_cast lines_per_step
+		dx := - nlines * scroll_pixels_per_line * graphics.scale
+		handled := event_mouse_scroll(window, auto_cast dx, 0)
+
+		if handled {InvalidateRect(hwnd, nil, false)}
+		return 0
     case WM_LBUTTONDOWN: fallthrough
     case WM_RBUTTONDOWN: fallthrough
     case WM_MBUTTONDOWN: fallthrough
@@ -497,6 +548,11 @@ event_mouse_pos :: proc(window: ^Window, x: int, y: int) -> bool {
 	return false
 }
 
+event_mouse_scroll :: proc(window: ^Window, dx: i32, dy: i32) -> bool {
+	// return textbox_event_mouse_pos(&window.graphics, &window.app.textbox, x, y)
+	codeeditor_event_mouse_scroll(window, &window.app.code_editor, dx, dy)
+	return true
+}
 
 
 Sys_Mouse_Cursor_Type :: enum {
