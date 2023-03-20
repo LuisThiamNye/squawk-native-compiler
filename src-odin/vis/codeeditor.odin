@@ -104,6 +104,7 @@ CodeNode_String :: struct {
 
 CodeEditor :: struct {
 	initP: bool,
+	regions_changed: bool,
 	regions: [dynamic]Region,
 	roots: [dynamic]CodeNode,
 	font: sk.SkFont, // one frame lifetime
@@ -533,7 +534,8 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 		paint_set_colour(paint, active_colour)
 
 		for region in regions {
-			for cursor in region.cursors {
+			for cursor, cursor_i in region.cursors {
+				is_to_cursor := cursor_i == 0
 				path := cursor.path
 				node := get_node_at_path(code_editor, path)
 				x, y: f32
@@ -631,6 +633,38 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 				}
 				x = math.round(x)
 				canvas_draw_rect(cnv, sk_rect(l=x-dl, r=x+dr, t=y, b=y+line_height), paint)
+
+				if regions_changed && is_to_cursor {
+					regions_changed = false
+					new_offset := scroll_offset
+					yi := cast(i32) y
+					v_margin := cast(i32) (line_height*0.2)
+					if yi-v_margin < view_rect.top {
+						new_offset.y = contents_rect.top - yi+v_margin
+					} else if yi + cast(i32) line_height + v_margin > view_rect.bottom {
+						new_offset.y = contents_rect.top - yi - cast(i32) line_height - v_margin + view_rect.bottom-view_rect.top
+					}
+					xi := cast(i32) x
+					dli := cast(i32) dl
+					dri := cast(i32) dr
+					h_margin := cast(i32) space_width
+					if xi-dli-h_margin<view_rect.left {
+						new_offset.x = contents_rect.left - xi+dli+h_margin
+					} else if xi+dri+h_margin > view_rect.right {
+						new_offset.x = contents_rect.left - xi-dri-h_margin + view_rect.right-view_rect.left
+					}
+					if new_offset != scroll_offset {
+						request_new_scroll(code_editor, new_offset)
+						request_frame(window)
+
+						// because of margins, we may end up requesting scrolls
+						// every frame if the cursor is on the first or last lines
+						// because it can't scroll any more
+						// HOWEVER: this is not the case because scrolls will only happen
+						// when regions_changed=true, i.e. only once when the
+						// user provided input that may have moved the cursor
+					}
+				}
 			}
 		}
 	}
@@ -1515,6 +1549,7 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 					region.from=region.to
 				}
 			}
+			scroll_to_ensure_cursor(editor)
 		case .left_arrow:
 			for region in &regions {
 				if region_is_point(region) {
@@ -1522,6 +1557,7 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 					region.from=region.to
 				}
 			}
+			scroll_to_ensure_cursor(editor)
 		case .up_arrow:
 			for region in &regions {
 				if region_is_point(region) {
@@ -1529,6 +1565,7 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 					region.from=region.to
 				}
 			}
+			scroll_to_ensure_cursor(editor)
 		case .down_arrow:
 			for region in &regions {
 				if region_is_point(region) {
@@ -1536,6 +1573,7 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 					region.from=region.to
 				}
 			}
+			scroll_to_ensure_cursor(editor)
 		case .backspace:
 			for region in &regions {
 				if region_is_point(region) {
@@ -1543,6 +1581,7 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 					region.from=region.to
 				}
 			}
+			scroll_to_ensure_cursor(editor)
 		case .home:
 			for region in &regions {
 				if region_is_point(region) {
@@ -1550,6 +1589,7 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 					region.from=region.to
 				}
 			}
+			scroll_to_ensure_cursor(editor)
 		case .enter:
 			for region in &regions {
 				if region_is_point(region) {
@@ -1590,6 +1630,7 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 					region.from=region.to
 				}
 			}
+			scroll_to_ensure_cursor(editor)
 		case:
 			handled = false
 		}
@@ -1809,6 +1850,10 @@ delete_cursor :: proc(cursor: Cursor) {
 	delete(cursor.path)
 }
 
+scroll_to_ensure_cursor :: proc(editor: ^CodeEditor) {
+	editor.regions_changed = true
+}
+
 codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int) {
 	using editor
 
@@ -1823,6 +1868,7 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 			codeeditor_insert_text(editor, cursor, input_str)
 			region.from = region.to
 		}
+		scroll_to_ensure_cursor(editor)
 		return
 	}
 
@@ -1933,6 +1979,7 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 			}
 		}
 	}
+	scroll_to_ensure_cursor(editor)
 }
 
 cursor_path_append :: proc(cursor: ^Cursor, idx: int) {
@@ -2121,6 +2168,11 @@ codezip_idx :: proc(using zip: CodeNode_Zipper) -> int {
 }
 
 codeeditor_event_mouse_scroll :: proc(window: ^Window, using editor: ^CodeEditor, dx: i32, dy: i32) {
+	new_scroll_offset := scroll_offset + {dx, dy}
+	request_new_scroll(editor, new_scroll_offset)
+}
+
+request_new_scroll :: proc(using editor: ^CodeEditor, new_scroll_offset: [2]i32) {
 	current_time := time.to_unix_nanoseconds(time.now())/1e6
 
 	using smooth_scroll
@@ -2138,8 +2190,8 @@ codeeditor_event_mouse_scroll :: proc(window: ^Window, using editor: ^CodeEditor
 		if !already_scrolling { // not scrolling
 			new_duration = max_duration
 			max_delta := u16(max_duration/interval_ratio)
-			prev_event_dts[0]=max_delta
-			prev_event_dts[1]=max_delta
+			prev_event_dts[0] = max_delta
+			prev_event_dts[1] = max_delta
 		} else { // currently scrolling
 			latest_delta := u16(current_time-latest_time)
 			average_delta := (prev_event_dts[0]+prev_event_dts[1]+latest_delta)/3
@@ -2149,8 +2201,6 @@ codeeditor_event_mouse_scroll :: proc(window: ^Window, using editor: ^CodeEditor
 			new_duration = clamp(average_delta*interval_ratio, min_duration, max_duration)
 		}
 	}
-
-	new_scroll_offset := scroll_offset + {dx, dy}
 
 	velocity: [2]i32 // pixels per second
 	{
