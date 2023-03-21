@@ -27,12 +27,16 @@ Cursor :: struct {
 	},
 }
 
-Region :: struct #raw_union {
-	using tofrom: struct {
-		to: Cursor,
-		from: Cursor,
+Region :: struct {
+	using _cursors: struct #raw_union {
+		using _tofrom: struct {
+			to: Cursor,
+			from: Cursor,
+		},
+		cursors: [2]Cursor,
 	},
-	cursors: [2]Cursor,
+	xpos: f32,
+	invalidate_xpos: bool,
 }
 
 region_is_point :: proc(using region: Region) -> bool {
@@ -147,6 +151,7 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 		// region.to.path[0] = 0
 		region.to.idx = 0
 		region.from=region.to
+		region.xpos = -1
 		append(&code_editor.regions, region)
 
 		codeeditor_refresh_from_file(code_editor)
@@ -533,7 +538,8 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 
 		paint_set_colour(paint, active_colour)
 
-		for region in regions {
+		for region in &regions {
+			// xpos : f32
 			for cursor, cursor_i in region.cursors {
 				is_to_cursor := cursor_i == 0
 				path := cursor.path
@@ -1432,7 +1438,7 @@ replace_span :: proc(array: ^[dynamic]$E, start: int, end: int, extras: []$A, lo
 }
 
 
-cursor_move_up :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
+cursor_move_up :: proc(editor: ^CodeEditor, region: ^Region, using cursor: ^Cursor) {
 	node := get_node_at_path(editor, path)
 	if node==nil{return}
 	switch node.tag{
@@ -1454,14 +1460,17 @@ cursor_move_up :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 				line_text := line.text
 				char_count += len(line_text)
 				if 0 <= text_idx && text_idx <= len(line_text) {
-					pixel_offset := measure_text_width(font, line_text[:text_idx])
+					if region.xpos==-1 {
+						region.xpos = measure_text_width(font, line_text[:text_idx])
+					}
 					if i>0 {
 						target_line_text := transmute([]u8) lines[i-1].text
-						target_line_idx := get_offset_at_coord(font, target_line_text, pixel_offset)
+						target_line_idx := get_offset_at_coord(font, target_line_text, region.xpos)
 						cursor.idx -= 1+text_idx+(len(target_line_text)-target_line_idx)
 					} else {
 						cursor.idx = 1
 					}
+					region.invalidate_xpos = false
 					break
 				}
 			}
@@ -1480,7 +1489,7 @@ cursor_move_up :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 	cursor_move_left_sibling(editor, cursor)
 }
 
-cursor_move_down :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
+cursor_move_down :: proc(editor: ^CodeEditor, region: ^Region, using cursor: ^Cursor) {
 	node := get_node_at_path(editor, path)
 	try_specific: {
 		if node != nil && node.tag==.string{
@@ -1497,14 +1506,17 @@ cursor_move_down :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 					line_text := line.text
 					char_count += len(line_text)
 					if 0 <= text_idx && text_idx <= len(line_text) {
-						pixel_offset := measure_text_width(font, line_text[:text_idx])
+						if region.xpos==-1 {
+							region.xpos = measure_text_width(font, line_text[:text_idx])
+						}
 						if i<len(lines)-1 {
 							target_line_text := transmute([]u8) lines[i+1].text
-							target_line_idx := get_offset_at_coord(font, target_line_text, pixel_offset)
+							target_line_idx := get_offset_at_coord(font, target_line_text, region.xpos)
 							cursor.idx += 1+target_line_idx+(len(line_text)-text_idx)
 						} else {
 							cursor.idx = 1+char_count
 						}
+						region.invalidate_xpos = false
 						break
 					}
 				}
@@ -1535,6 +1547,31 @@ last_idx_of_node :: proc(node: ^CodeNode) -> int {
 	panic("")
 }
 
+region_simple_move :: proc(using editor: ^CodeEditor, direction: enum {right, left, down, up, home}) {
+	for region in &regions {
+		region.invalidate_xpos = true
+		if region_is_point(region) {
+			switch direction {
+			case .right:
+				cursor_move_right(editor, &region.to)
+			case .left:
+				cursor_move_left(editor, &region.to)
+			case .down:
+				cursor_move_down(editor, &region, &region.to)
+			case .up:
+				cursor_move_up(editor, &region, &region.to)
+			case .home:
+				cursor_move_to_start_of_coll(editor, &region.to)
+			}
+			region.from=region.to
+		}
+		if region.invalidate_xpos {
+			region.xpos = -1 // invalidate
+		}
+	}
+	scroll_to_ensure_cursor(editor)
+}
+
 codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, using evt: Event_Key) -> bool {
 	handled := true
 
@@ -1543,53 +1580,24 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 	if mods=={} {
 		#partial switch key {
 		case .right_arrow:
-			for region in &regions {
-				if region_is_point(region) {
-					cursor_move_right(editor, &region.to)
-					region.from=region.to
-				}
-			}
-			scroll_to_ensure_cursor(editor)
+			region_simple_move(editor, .right)
 		case .left_arrow:
-			for region in &regions {
-				if region_is_point(region) {
-					cursor_move_left(editor, &region.to)
-					region.from=region.to
-				}
-			}
-			scroll_to_ensure_cursor(editor)
+			region_simple_move(editor, .left)
 		case .up_arrow:
-			for region in &regions {
-				if region_is_point(region) {
-					cursor_move_up(editor, &region.to)
-					region.from=region.to
-				}
-			}
-			scroll_to_ensure_cursor(editor)
+			region_simple_move(editor, .up)
 		case .down_arrow:
-			for region in &regions {
-				if region_is_point(region) {
-					cursor_move_down(editor, &region.to)
-					region.from=region.to
-				}
-			}
-			scroll_to_ensure_cursor(editor)
+			region_simple_move(editor, .down)
 		case .backspace:
 			for region in &regions {
 				if region_is_point(region) {
 					cursor_delete_left(editor, &region.to)
 					region.from=region.to
 				}
+				region.xpos = -1
 			}
 			scroll_to_ensure_cursor(editor)
 		case .home:
-			for region in &regions {
-				if region_is_point(region) {
-					cursor_move_to_start_of_coll(editor, &region.to)
-					region.from=region.to
-				}
-			}
-			scroll_to_ensure_cursor(editor)
+			region_simple_move(editor, .home)
 		case .enter:
 			for region in &regions {
 				if region_is_point(region) {
@@ -1629,6 +1637,7 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 					}
 					region.from=region.to
 				}
+				region.xpos = -1
 			}
 			scroll_to_ensure_cursor(editor)
 		case:
@@ -1850,7 +1859,7 @@ delete_cursor :: proc(cursor: Cursor) {
 	delete(cursor.path)
 }
 
-scroll_to_ensure_cursor :: proc(editor: ^CodeEditor) {
+scroll_to_ensure_cursor :: proc(editor: ^CodeEditor, ) {
 	editor.regions_changed = true
 }
 
@@ -1867,6 +1876,7 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 			input_str := utf8.runes_to_string({cast(rune) ch}, context.temp_allocator)
 			codeeditor_insert_text(editor, cursor, input_str)
 			region.from = region.to
+			region.xpos = -1
 		}
 		scroll_to_ensure_cursor(editor)
 		return
@@ -1978,6 +1988,7 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 				codeeditor_insert_text(editor, cursor, input_str)
 			}
 		}
+		region.xpos = -1
 	}
 	scroll_to_ensure_cursor(editor)
 }
