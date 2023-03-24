@@ -140,7 +140,7 @@ codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
 		}
 
 		ch := input[i]
-		if ch==' '||ch=='\r' { // eat whitespace
+		if ch==' '||ch=='\r'||ch=='\t'||ch==13||ch==14 { // eat whitespace
 			i += 1
 		} else if ch=='\n' {
 			node : CodeNode

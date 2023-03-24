@@ -1415,12 +1415,10 @@ codenode_remove :: proc(editor: ^CodeEditor, node: ^CodeNode, cursor: ^Cursor) {
 		}
 	}
 
-	codenode_remove2(editor, node, path)
+	codenode_remove2(editor, node, path, node_idx)
 }
 
-codenode_remove2 :: proc(editor: ^CodeEditor, node: ^CodeNode, path: []int) {
-	node_idx := path[len(path)-1]
-
+codenode_remove2 :: proc(editor: ^CodeEditor, node: ^CodeNode, path: []int, node_idx: int) {
 	siblings := get_siblings_of_codenode(editor, path)
 	if node.tag==.token && node.token.prefix {
 		codenode_set_prefix(&siblings[node_idx+1], false)
@@ -1435,92 +1433,99 @@ cursor_delete_left :: proc(editor: ^CodeEditor, using cursor: ^Cursor) {
 	node := get_node_at_path(editor, path)
 	if node==nil {return}
 
-	switch node.tag {
-
-	case .newline:
+	if node.tag==.newline {
 		if cursor.idx==0 {
 			codenode_remove(editor, node, cursor)
 		}
-
-	case .token:
-		token := node.token
-		if cursor.place == .after {
-			cursor.idx = len(token.text) // move left
-
-		} else if cursor.idx > 0 {
-			// delete a char
-			text := &node.token.text
-			text_idx := cursor.idx
-			_, size := utf8.decode_last_rune(text[:text_idx])
-
-			if len(token.text)==size { // delete the node
-				codenode_remove(editor, node, cursor)
-				if token.prefix {
-					cursor_move_right(editor, cursor)
-				}
-			} else {
-				text2 := make([]u8, len(text)-size)
-				copy(text2, text[:cursor.idx-size])
-				if cursor.idx < len(text) {
-					copy(text2[cursor.idx-size:], text[cursor.idx:])
-				}
-				delete(text^)
-				text^ = text2
-				cursor.idx -= size
-			}
-
-		} else if cursor.idx==0 { // delete before
-			node_idx := path[len(path)-1]
-			if node_idx == 0 {
-				cursor_to_parent(cursor)
-				cursor_delete_left(editor, cursor)
+	} else
+	// Delete before
+	if cursor.place==.before || cursor.idx==0 {
+		node_idx := path[len(path)-1]
+		if node_idx == 0 {
+			cursor_to_parent(cursor)
+			cursor_delete_left(editor, cursor)
+		} else {
+			siblings := get_siblings_of_codenode(editor, path)
+			left_node := &siblings[node_idx-1]
+			if left_node.tag==.newline {
+				codenode_remove2(editor, left_node, path, node_idx-1)
+				cursor.path[len(path)-1] -= 1
 			} else {
 				cursor_move_left(editor, cursor)
 			}
 		}
-		return
+	} else {
+		switch node.tag {
 
-	case .string:
-		text_idx := cursor.idx-1
-		if cursor.place == .after {
-			cursor.idx = rp.get_count(node.string.text)+2 // move left
-		} else if cursor.idx==1 || text_idx>rp.get_count(node.string.text) { // delete the node
-			codenode_remove(editor, node, cursor)
-		} else if text_idx>0 {
-			// delete a char
-			text := &node.string.text
-			text_str := rp.to_string(text, context.temp_allocator)
-			_, size := utf8.decode_last_rune(text_str[:text_idx])
-			rp.remove_range(text, text_idx-size, text_idx)
-			cursor.idx -= size
-		} else {
-			// TBD delete before
-		}
-		return
+		case .newline: panic("unreachable: already handled")
 
-	case .coll:
-		if cursor.coll_place==.open_pre || cursor.place==.before{
-			cursor_move_left(editor, cursor)
-		} else if cursor.place==.after {
-			cursor.idx=2 // move left
-		} else if cursor.coll_place==.open_post { // splice
-			children := &node.coll.children
-			if len(children) > 0 {
-				siblings := get_siblings_of_codenode(editor, cursor.path)
-				node_idx := path[len(path)-1]
-				node_value := node^ // the next instruction will invalidate the node pointer
-				children = &node_value.coll.children
-				replace_span(siblings, node_idx, node_idx+1, children[:])
+		case .token:
+			token := node.token
+			if cursor.place == .after {
+				cursor.idx = len(token.text) // move left
 
-				delete(children^)
-				delete_codenode_shallow(node_value)
+			} else if cursor.idx > 0 {
+				// delete a char
+				text := &node.token.text
+				text_idx := cursor.idx
+				_, size := utf8.decode_last_rune(text[:text_idx])
 
-				cursor.idx = 0
-			} else {
-				codenode_remove(editor, node, cursor)
+				if len(token.text)==size { // delete the node
+					codenode_remove(editor, node, cursor)
+					if token.prefix {
+						cursor_move_right(editor, cursor)
+					}
+				} else {
+					text2 := make([]u8, len(text)-size)
+					copy(text2, text[:cursor.idx-size])
+					if cursor.idx < len(text) {
+						copy(text2[cursor.idx-size:], text[cursor.idx:])
+					}
+					delete(text^)
+					text^ = text2
+					cursor.idx -= size
+				}
 			}
+			return
+
+		case .string:
+			text_idx := cursor.idx-1
+			if cursor.place == .after {
+				cursor.idx = rp.get_count(node.string.text)+2 // move left
+			} else if cursor.idx==1 || text_idx>rp.get_count(node.string.text) { // delete the node
+				codenode_remove(editor, node, cursor)
+			} else if text_idx>0 {
+				// delete a char
+				text := &node.string.text
+				text_str := rp.to_string(text, context.temp_allocator)
+				_, size := utf8.decode_last_rune(text_str[:text_idx])
+				rp.remove_range(text, text_idx-size, text_idx)
+				cursor.idx -= size
+			}
+			return
+
+		case .coll:
+			if cursor.place==.after {
+				cursor.idx=2 // move left
+			} else if cursor.coll_place==.open_post { // splice
+				children := &node.coll.children
+				if len(children) > 0 {
+					siblings := get_siblings_of_codenode(editor, cursor.path)
+					node_idx := path[len(path)-1]
+					node_value := node^ // the next instruction will invalidate the node pointer
+					children = &node_value.coll.children
+					replace_span(siblings, node_idx, node_idx+1, children[:])
+
+					delete(children^)
+					delete_codenode_shallow(node_value)
+
+					cursor.idx = 0
+				} else {
+					codenode_remove(editor, node, cursor)
+				}
+			}
+			return
 		}
-		return
 	}
 }
 
@@ -1899,7 +1904,7 @@ remove_selected_contents :: proc(editor: ^CodeEditor, region: ^Region) {
 		} else {
 			for i in 0..<count {
 				node := get_node_at_path(editor, start_path)
-				codenode_remove2(editor, node, start_path)
+				codenode_remove2(editor, node, start_path, start_path[len(start_path)-1])
 			}
 		}
 	} else {
@@ -1955,39 +1960,8 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 			for region in &regions {
 				if region_is_point(region) {
 					cursor := &region.to
-					path := cursor.path
-					node := get_node_at_path(editor, path)
-					if node==nil {continue}
+					codeeditor_insert_text(editor, cursor, "\n")
 
-					cursor_on_left := cursor.place==.before || cursor.idx==0
-
-					if cursor_on_left || cursor.place==.after || cursor.idx==last_idx_of_node(node) {
-						nl_node : CodeNode
-						nl_node.tag = .newline
-
-						siblings := get_siblings_of_codenode(editor, cursor.path)
-						target_node_idx := cursor.path[len(cursor.path)-1]
-						if !cursor_on_left || node.tag==.newline {target_node_idx += 1}
-
-						inject_at(siblings, target_node_idx, nl_node)
-						cursor.path[len(cursor.path)-1] = target_node_idx
-						cursor.idx = 0
-
-					} else if node.tag ==.string {
-						codenode_string_insert_text(node, cursor, "\n")
-					} else if node.tag ==.token {
-
-					} else if node.tag == .coll {
-						nl_node : CodeNode
-						nl_node.tag = .newline
-
-						siblings := &node.coll.children
-						target_node_idx := 0
-
-						inject_at(siblings, target_node_idx, nl_node)
-						cursor_path_append(cursor, target_node_idx)
-						cursor.idx = 0
-					}
 					delete_cursor(region.from)
 					deep_copy(&region.from, &region.to)
 				}
@@ -2054,58 +2028,16 @@ max_token_length :: 1024
 
 codeeditor_insert_nodes_from_text :: proc
 (editor: ^CodeEditor, input: string, nodes0: ^[dynamic]CodeNode, insert_idx: int) -> int {
-	nodes := make([dynamic]CodeNode, insert_idx)
+	nodes, ok := codenodes_from_string(input)
 
-	n_nodes_added := 0
-
-	token_start_idx := 0
-	whitespace := true
-	for i := 0; ; i+=1 {
-		c : u8
-		if i < len(input) {c=input[i]}
-		if c==' ' || i==len(input) {
-			if !whitespace {
-				segment := input[token_start_idx:i]
- 				if len(segment) > max_token_length {
- 					n_nodes_added = 0
- 					break
- 				}
-				node : CodeNode
- 				node.tag = .token
- 				node.token.text = make(type_of(node.token.text), len(segment))
- 				copy(node.token.text, segment)
- 				append(&nodes, node)
- 				n_nodes_added += 1
- 			}
-			if i==len(input) {
-				break
-			}
-			token_start_idx = i+1
-		} else if !codeeditor_valid_token_charP(cast(rune) c) {
-			n_nodes_added = 0
-			break
-		} else {
-			whitespace = false
-		}
-	}
-
-	if n_nodes_added==0 {
+	if !ok {
 		fmt.println("parse error")
-		for node in nodes {
-			delete_codenode(node)
-		}
 		return 0
 	}
 
-	if insert_idx < len(nodes0) {
-		append_elems(&nodes, ..nodes0[insert_idx:])
-	}
-	copy(nodes[:], nodes0[:insert_idx])
+	inject_at_elems(nodes0, insert_idx, ..nodes)
 
-	delete(nodes0^)
-	nodes0^ = nodes
-
-	return n_nodes_added
+	return len(nodes)
 }
 
 import "core:unicode/utf8"
@@ -2165,7 +2097,6 @@ codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input
 				cursor.place = .before
 				codeeditor_insert_text(editor, cursor, input_str)
 				node = nil
-				siblings := get_siblings_of_codenode(editor, cursor.path)
 				new_node_idx := cursor.path[len(cursor.path)-1]
 				new_node := &siblings[new_node_idx]
 				if new_node.tag==.token {
@@ -2207,18 +2138,35 @@ codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input
 				if text_idx<token_length {
 					ss[2] = token_str[text_idx:]
 				}
-				expanded_str := strings.concatenate(ss)
+				expanded_str := strings.concatenate(ss, context.temp_allocator)
 				saved_cursor := clone_cursor(cursor^)
-				codenode_remove(editor, node, cursor)
 				n_nodes_added := codeeditor_insert_nodes_from_text(
-					editor, expanded_str, siblings, node_sibling_idx)
-				target_node_idx := node_sibling_idx + n_nodes_added - 1
+					editor, expanded_str, siblings, node_sibling_idx+1)
+				if n_nodes_added==0 {
+					// parse failure
+				} else {
+					codenode_remove(editor, node, cursor)
+					target_node_idx := node_sibling_idx + n_nodes_added - 1
 
-				delete_cursor(cursor^)
-				cursor^ = saved_cursor
-				cursor.path[len(cursor.path)-1] = target_node_idx
-				cursor.idx = last_idx_of_node(&siblings[target_node_idx])
-				cursor.idx -= token_length-text_idx
+					delete_cursor(cursor^)
+					cursor^ = saved_cursor
+					cursor.path[len(cursor.path)-1] = target_node_idx
+					cursor.idx = last_idx_of_node(&siblings[target_node_idx])
+					cursor.idx -= token_length-text_idx
+				}
+			}
+		}
+	}
+
+	// Bump forwards if landed on newline
+	node2 := get_node_at_path(editor, cursor.path)
+	if node2.tag == .newline {
+		node_idx := cursor.path[len(cursor.path)-1]
+		siblings2 := get_siblings_of_codenode(editor, cursor.path)
+		if node_idx+1 < len(siblings2) {
+			right_node := siblings2[node_idx+1]
+			if right_node.tag != .newline {
+				cursor.path[len(cursor.path)-1] += 1
 			}
 		}
 	}
