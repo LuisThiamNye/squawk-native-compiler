@@ -68,7 +68,7 @@ right_slice :: proc(node: ^RopeNode, start: int, allocator:=context.allocator) {
 			delete(node.str, allocator)
 			node.str = {}
 		} else { // slice
-			node.str = slice_resize(node.str, start, len(node.str))
+			slice_resize(&node.str, start, len(node.str))
 		}
 
 	} else if start==node.count { // compound, delete entire string
@@ -106,7 +106,7 @@ left_slice :: proc(node: ^RopeNode, end: int, allocator:=context.allocator) {
 
 	} else if node.count<0 { // leaf
 		if end < len(node.str) {
-			node.str = slice_resize(node.str, 0, end)
+			slice_resize(&node.str, 0, end)
 			assert_rope(node)
 		}
 
@@ -188,25 +188,25 @@ remove_range :: proc(node: ^RopeNode, start: int, end: int, allocator:=context.a
 
 import "core:strings"
 
-slice_resize :: proc(array: []$E, start: int, end: int, allocator := context.allocator) -> []E {
+slice_resize :: proc(array: ^[]$E, start: int, end: int, allocator := context.allocator) {
 	n2 := end-start
 	new_array := make([]E, n2, allocator)
-	defer delete(array, allocator)
 	copy(new_array, array[start:end])
-	return new_array
+	delete(array^, allocator)
+	array^ = new_array
 }
 
 slice_remove_range :: proc(array: []$E, start: int, end: int, allocator := context.allocator) -> []E {
 	n1 := len(array)
 	n2 := n1-(end-start)
 	new_array := make([]E, n2, allocator)
-	defer delete(array, allocator)
 	copy(new_array, array[:start])
 	if end<len(array) {copy(new_array[start:], array[end:])}
 	fmt.println(">>>", array)
 	fmt.println(new_array)
 	// new_data := mem.resize(ptr=raw_data(array), old_size=n1, new_size=n2, allocator=allocator)
 	// new_array := mem.slice_ptr(cast(^E) new_data, n2)
+	delete(array, allocator)
 	return new_array
 }
 

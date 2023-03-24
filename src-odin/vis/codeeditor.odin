@@ -37,6 +37,7 @@ Region :: struct {
 	},
 	xpos: f32,
 	invalidate_xpos: bool,
+	is_block: bool,
 }
 
 region_is_point :: proc(using region: Region) -> bool {
@@ -44,6 +45,7 @@ region_is_point :: proc(using region: Region) -> bool {
 	for i in 0..<len(to.path) {
 		if to.path[i] != from.path[i] {return false}
 	}
+	if from.idx != to.idx {return false}
 	return true
 }
 
@@ -150,7 +152,7 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 		// region.to.path = make(type_of(region.to.path), 1)
 		// region.to.path[0] = 0
 		region.to.idx = 0
-		region.from=region.to
+		deep_copy(&region.from, &region.to)
 		region.xpos = -1
 		append(&code_editor.regions, region)
 
@@ -303,6 +305,10 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	blob_curly_close := make_textblob_from_text("}", font)
 	blob_double_quote := make_textblob_from_text("\"", font)
 
+	// Draw selection background
+	{
+		//
+	}
 
 	{ // Draw nodes
 		max_x : f32 = 0
@@ -1312,6 +1318,12 @@ codenode_remove :: proc(editor: ^CodeEditor, node: ^CodeNode, cursor: ^Cursor) {
 		}
 	}
 
+	codenode_remove2(editor, node, path)
+}
+
+codenode_remove2 :: proc(editor: ^CodeEditor, node: ^CodeNode, path: []int) {
+	node_idx := path[len(path)-1]
+
 	siblings := get_siblings_of_codenode(editor, path)
 	if node.tag==.token && node.token.prefix {
 		codenode_set_prefix(&siblings[node_idx+1], false)
@@ -1547,29 +1559,268 @@ last_idx_of_node :: proc(node: ^CodeNode) -> int {
 	panic("")
 }
 
-region_simple_move :: proc(using editor: ^CodeEditor, direction: enum {right, left, down, up, home}) {
+ordered_cursors :: proc(editor: ^CodeEditor, region: ^Region) -> (left_cursor: ^Cursor, right_cursor: ^Cursor) {
+	to := &region.to
+	from := &region.from
+	to_is_ahead := false
+
+	if len(from.path)==0 {
+		to_is_ahead = len(to.path)!=0
+	} else if len(to.path)==0 {
+		// to_is_ahead = false
+	} else {
+		from_level := len(from.path)-1
+		to_level := len(to.path)-1
+		for i := 0; i < len(from.path); i += 1 {
+			from_node_idx := from.path[i]
+			to_node_idx := to.path[i]
+
+			if from_node_idx < to_node_idx {
+				to_is_ahead = true
+				break
+			} else if to_node_idx < from_node_idx {
+				// to_is_ahead = false
+				break
+
+			} else if i==from_level && i==to_level { // same node
+				if to.place==.after {
+					if from.place != .after {
+						to_is_ahead = true
+					}
+				} else if to.place==.before {
+					// to_is_ahead = false
+				} else if from.idx < to.idx {
+					to_is_ahead = true
+				}
+				break
+
+			} else if i==from_level || i==to_level {
+				high_cursor : ^Cursor
+				low_cursor : ^Cursor
+				container_node : ^CodeNode
+				if i==from_level {
+					high_cursor = from
+					low_cursor = to
+					container_node = get_node_at_path(editor, from.path)
+				} else {
+					high_cursor = to
+					low_cursor = from
+					container_node = get_node_at_path(editor, to.path)
+				}
+				container_ahead := false
+				switch container_node.tag {
+				case .token, .newline, .string:
+					fmt.println("i", i, ", from_level", from_level)
+					fmt.panicf("unreachable: %v node cannot have cursor at child position. From: %v, To: %v\n", container_node.tag, from.path, to.path)
+				case .coll:
+					if (high_cursor.place==.after || high_cursor.coll_place==.close_pre ||
+						high_cursor.coll_place==.close_post) {
+						container_ahead=true
+					}
+				}
+				if container_ahead {
+					left_cursor = low_cursor
+					right_cursor = high_cursor
+				} else {
+					left_cursor = high_cursor
+					right_cursor = low_cursor
+				}
+				return
+
+			} else {
+				continue
+			}
+		}
+	}
+
+	if to_is_ahead {
+		left_cursor = &region.from
+		right_cursor = &region.to
+	} else {
+		left_cursor = &region.to
+		right_cursor = &region.from
+	}
+	return
+}
+
+deep_copy :: proc{deep_copy_cursor, deep_copy_region}
+
+deep_copy_region :: proc(dest: ^Region, src: ^Region) {
+	mem.copy(dest, src, size_of(Region))
+	deep_copy_cursor(&dest.from, &src.from)
+	deep_copy_cursor(&dest.to, &src.to)
+}
+
+deep_copy_cursor :: proc(dest: ^Cursor, src: ^Cursor) {
+	mem.copy(dest, src, size_of(Cursor))
+	dest.path = make(type_of(dest.path), len(src.path))
+	copy(dest.path, src.path)
+}
+
+region_simple_move :: proc(using editor: ^CodeEditor, reset_selection: bool, direction: enum {right, left, down, up, home}) {
 	for region in &regions {
 		region.invalidate_xpos = true
-		if region_is_point(region) {
-			switch direction {
-			case .right:
+		lc_, rc_ := ordered_cursors(editor, &region)
+		lc := lc_^
+		rc := rc_^
+		is_point := region_is_point(region)
+		collapsing_selection := reset_selection && !is_point
+		is_block := !reset_selection && region_is_block_selection(editor, &region)
+		block_level := region_block_level(region)
+		single_block_selection := is_block && region.to.path[block_level]==region.from.path[block_level]
+		switch direction {
+		case .right:
+			if collapsing_selection {
+				region.to = rc
+				region.from = lc
+			} else {
+				if is_block && !single_block_selection {
+					node := get_node_at_path(editor, region.to.path)
+					if node != nil {
+						edge_idx := last_idx_of_node(node)
+						if edge_idx != region.to.idx {
+							region.to.idx = edge_idx
+							if is_point {
+								break
+							}
+						}
+					}
+				}
 				cursor_move_right(editor, &region.to)
-			case .left:
-				cursor_move_left(editor, &region.to)
-			case .down:
-				cursor_move_down(editor, &region, &region.to)
-			case .up:
-				cursor_move_up(editor, &region, &region.to)
-			case .home:
-				cursor_move_to_start_of_coll(editor, &region.to)
 			}
-			region.from=region.to
+		case .left:
+			if collapsing_selection {
+				region.to = lc
+				region.from = rc
+			} else {
+				if is_block && !single_block_selection {
+					if region.to.idx != 0 {
+						region.to.idx = 0
+						if is_point {
+							break
+						}
+					}
+				}
+				cursor_move_left(editor, &region.to)
+			}
+		case .down:
+			cursor_move_down(editor, &region, &region.to)
+		case .up:
+			cursor_move_up(editor, &region, &region.to)
+		case .home:
+			cursor_move_to_start_of_coll(editor, &region.to)
+		}
+		
+		if reset_selection {
+			delete_cursor(region.from)
+			deep_copy(&region.from, &region.to)
+		} else {
+			// raise cursor up to block level
+			block_level := region_block_level(region)
+			n := block_level + 1
+			if n < len(region.to.path) {
+				rp.slice_resize(&region.to.path, 0, n)
+			}
+
+			is_block = is_block || region_is_block_selection(editor, &region)
+
+			lc, rc := ordered_cursors(editor, &region)
+			reversed := lc==&region.to
+
+			node := get_node_at_path(editor, region.to.path)
+			if node != nil && is_block {
+				single_block_selection := region.to.path[block_level]==region.from.path[block_level]
+				if reversed && !(single_block_selection && region.from.idx == 0) {
+					region.to.idx = 0
+				} else {
+					region.to.idx = last_idx_of_node(node)
+				}
+			}
 		}
 		if region.invalidate_xpos {
 			region.xpos = -1 // invalidate
 		}
 	}
 	scroll_to_ensure_cursor(editor)
+}
+
+region_is_block_selection :: proc(editor: ^CodeEditor, region: ^Region) -> bool {
+	block_level := region_block_level(region^)
+	lc, rc := ordered_cursors(editor, region)
+
+	is_block := false
+
+	siblings := get_siblings_of_codenode(editor, region.to.path[:block_level+1])
+	if siblings==nil {
+		fmt.println("nil: unsupported")
+		is_block = false
+	} else if block_level<len(lc.path) && block_level<len(rc.path) {
+		start := lc.path[block_level]
+		endinc := rc.path[block_level]
+		for node, i in siblings[start:endinc+1] {
+			if is_delimited_node(node) {
+				is_block = true
+				break
+			}
+		}
+	}
+	return is_block
+}
+
+is_delimited_node :: proc(node: CodeNode) -> bool {
+	return node.tag==.coll || node.tag==.string
+}
+
+remove_selected_contents :: proc(editor: ^CodeEditor, region: ^Region) {
+	lc, rc := ordered_cursors(editor, region)
+	if region.is_block {
+		start_path : type_of(region.to.path)
+		count : int
+		for i := 0;; i+=1 {
+			if i < len(lc.path) && i < len(rc.path) {
+				lc_idx := lc.path[i]
+				rc_idx := rc.path[i]
+				if lc_idx == rc_idx {
+					continue
+				} else {
+					start_path = rc.path[:i+1]
+					count = rc_idx - lc_idx
+					break
+				}
+			} else { // delete the node at the prior level
+				start_path = lc.path[:i]
+				count = 1
+				break
+			}
+		}
+		if len(start_path) == 0 {
+			// TODO root node; what does this mean?
+		} else {
+			for i in 0..<count {
+				node := get_node_at_path(editor, start_path)
+				codenode_remove2(editor, node, start_path)
+			}
+		}
+	} else {
+		// TODO
+	}
+}
+
+// returns the path index concerning block selection
+// (first index where node index may diverge)
+region_block_level :: proc(region: Region) -> int {
+	from := region.from
+	to := region.to
+	n := math.min(len(from.path), len(to.path))
+	level := n-1
+	for i in 0..<n {
+		a := from.path[i]
+		b := to.path[i]
+		if a != b {
+			level = i
+		}
+	}
+	return level
 }
 
 codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, using evt: Event_Key) -> bool {
@@ -1580,24 +1831,25 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 	if mods=={} {
 		#partial switch key {
 		case .right_arrow:
-			region_simple_move(editor, .right)
+			region_simple_move(editor, true, .right)
 		case .left_arrow:
-			region_simple_move(editor, .left)
+			region_simple_move(editor, true, .left)
 		case .up_arrow:
-			region_simple_move(editor, .up)
+			region_simple_move(editor, true, .up)
 		case .down_arrow:
-			region_simple_move(editor, .down)
+			region_simple_move(editor, true, .down)
 		case .backspace:
 			for region in &regions {
 				if region_is_point(region) {
 					cursor_delete_left(editor, &region.to)
-					region.from=region.to
+					delete_cursor(region.from)
+					deep_copy(&region.from, &region.to)
 				}
 				region.xpos = -1
 			}
 			scroll_to_ensure_cursor(editor)
 		case .home:
-			region_simple_move(editor, .home)
+			region_simple_move(editor, true, .home)
 		case .enter:
 			for region in &regions {
 				if region_is_point(region) {
@@ -1635,11 +1887,21 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 						cursor_path_append(cursor, target_node_idx)
 						cursor.idx = 0
 					}
-					region.from=region.to
+					delete_cursor(region.from)
+					deep_copy(&region.from, &region.to)
 				}
 				region.xpos = -1
 			}
 			scroll_to_ensure_cursor(editor)
+		case:
+			handled = false
+		}
+	} else if mods=={.shift} {
+		#partial switch key {
+		case .right_arrow:
+			region_simple_move(editor, false, .right)
+		case .left_arrow:
+			region_simple_move(editor, false, .left)
 		case:
 			handled = false
 		}
@@ -1654,9 +1916,22 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 			if !ok {
 				fmt.println("failed to write file")
 			}
+		case .v: // paste
+			text, ok := clipboard_get_text()
+			for region in &regions {
+				if !region_is_point(region) {
+					remove_selected_contents(editor, &region)
+				}
+				codeeditor_insert_text(editor, &region.to, text)
+				delete_cursor(region.from)
+				deep_copy(&region.from, &region.to)
+			}
+			scroll_to_ensure_cursor(editor)
 		case:
 			handled = false
 		}
+	} else {
+		handled = false
 	}
 
 	return handled
@@ -1893,7 +2168,10 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 		is_inserting_first_child := len(path)==0 || (node.tag==.coll && cursor.coll_place==.open_post)
 		is_inserting_macro := len(path)==0 || cursor.idx==last_idx_of_node(node) || is_inserting_in_gap || is_inserting_first_child
 
-		defer region.from=region.to
+		defer {
+			delete_cursor(region.from)
+			deep_copy(&region.from, &region.to)
+		}
 
 		if ch==';' {
 			cursor_move_out_to_insert_newline(editor, cursor)
