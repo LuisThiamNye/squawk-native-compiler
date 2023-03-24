@@ -18,13 +18,15 @@ import sk "../skia"
 import rp "../rope"
 
 
+CursorPosition :: struct #raw_union {
+	idx: int, // >= 0
+	place: enum int {before=-1, after=-2},
+	coll_place: enum int{open_pre=0, open_post=1, close_pre=2, close_post=3},
+}
+
 Cursor :: struct {
 	path: []int,
-	using _idx: struct #raw_union {
-		idx: int, // >= 0
-		place: enum int {before=-1, after=-2},
-		coll_place: enum int{open_pre=0, open_post=1, close_pre=2, close_post=3},
-	},
+	using position: CursorPosition,
 }
 
 Region :: struct {
@@ -126,6 +128,9 @@ CodeEditor :: struct {
 		start_pos: [2]i32, // relative to view_rect
 		control_point1s: [2][2]f32,
 	},
+
+	space_width: f32,
+	line_height: f32,
 }
 
 codeeditor_refresh_from_file :: proc(editor: ^CodeEditor) {
@@ -271,9 +276,9 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 
 	metrics : SkFontMetrics
 	line_spacing := font_get_metrics(font, &metrics)
-	line_height := line_spacing
+	line_height = math.ceil(line_spacing)
 
-	space_width := math.round(measure_text_width(font, " "))
+	space_width = math.round(measure_text_width(font, " "))
 
 
 
@@ -305,12 +310,15 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 	blob_curly_close := make_textblob_from_text("}", font)
 	blob_double_quote := make_textblob_from_text("\"", font)
 
-	// Draw selection background
-	{
-		//
+	TextDrawItem :: struct {
+		x: f32,
+		y: f32,
+		blob: sk.SkTextBlob,
+		colour: u32,
 	}
+	text_draw_items := make([dynamic]TextDrawItem, 0, context.temp_allocator)
 
-	{ // Draw nodes
+	{ // Calculate nodes layout
 		max_x : f32 = 0
 
 		Frame_DrawNode :: struct{
@@ -323,7 +331,8 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 			siblings: ^[dynamic]CodeNode,
 			left_start_x: f32,
 		}
-		stack : [dynamic]Frame_DrawNode
+		tdi : TextDrawItem
+		stack := make([dynamic]Frame_DrawNode, 0, context.temp_allocator)
 		siblings := &roots
 		node_i := 0
 		x := origin.x
@@ -356,8 +365,11 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 
 					{ // Draw collection RHS
 						using frame.coll
-						paint_set_colour(paint, bracket_colour)
-						canvas_draw_text_blob(cnv, blob_close, x, y-metrics.ascent, paint)
+						tdi.x = x
+						tdi.y = y-metrics.ascent
+						tdi.blob = blob_close
+						tdi.colour = bracket_colour
+						append(&text_draw_items, tdi)
 						x += width_close
 					}
 
@@ -401,21 +413,26 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 
 				c0 := text[0]
 				constantP := c0==':' || ('0' <= c0 && c0 <= '9') || text=="nil" || text=="false" || text=="true"
+				colour : u32
 				if constantP {
-					paint_set_colour(paint, constants_colour)
+					colour = constants_colour
 				} else if node.token.prefix {
-					paint_set_colour(paint, bracket_colour)
+					colour = bracket_colour
 				} else {
-					paint_set_colour(paint, 0xFF000000)
+					colour = 0xFF000000
 				}
-				canvas_draw_text_blob(cnv, blob, x, y-metrics.ascent, paint)
+				tdi.x = x
+				tdi.y = y-metrics.ascent
+				tdi.blob = blob
+				tdi.colour = colour
+				append(&text_draw_items, tdi)
 
 				width := measure_text_width(font, text)
 				x += width
 			case .string:
 				text := &node.string.text
 
-				text_lines : [dynamic]string
+				text_lines := make([dynamic]string, 0, context.temp_allocator)
 				{
 					line_builder := strings.builder_make()
 					it := rp.byte_iterator(text)
@@ -441,11 +458,12 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 
 				width_delim := measure_text_width(font, "\"")
 
-				// paint_set_colour(paint, string_colour)
-				// canvas_draw_rect(cnv, sk_rect(x, y, x+width_delim, y+line_height), paint)
+				tdi.x = x
+				tdi.y = y-metrics.ascent
+				tdi.blob = blob_double_quote
+				tdi.colour = string_quote_colour
+				append(&text_draw_items, tdi)
 
-				paint_set_colour(paint, string_quote_colour)
-				canvas_draw_text_blob(cnv, blob_double_quote, x, y-metrics.ascent, paint)
 				x += width_delim
 
 				bg_extra_width := width_delim*0.25
@@ -462,20 +480,27 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 					width := measure_text_width(font, line)
 					paint_set_colour(paint, string_colour)
 					canvas_draw_rect(cnv, sk_rect(x-nl_extra_width, y, x+width+end_extra_width, y+line_height), paint)
-					paint_set_colour(paint, 0xFF000000)
+
 					blob := make_textblob_from_text(line, font)
-					canvas_draw_text_blob(cnv, blob, x, y-metrics.ascent, paint)
+
+					tdi.x = x
+					tdi.y = y-metrics.ascent
+					tdi.blob = blob
+					tdi.colour = 0xFF000000
+					append(&text_draw_items, tdi)
+
 					x += width
 
 					ns.lines[i].width = width
 					ns.lines[i].text = line
 				}
 
-				// paint_set_colour(paint, string_colour)
-				// canvas_draw_rect(cnv, sk_rect(x, y, x+width_delim, y+line_height), paint)
+				tdi.x = x
+				tdi.y = y-metrics.ascent
+				tdi.blob = blob_double_quote
+				tdi.colour = string_quote_colour
+				append(&text_draw_items, tdi)
 
-				paint_set_colour(paint, string_quote_colour)
-				canvas_draw_text_blob(cnv, blob_double_quote, x, y-metrics.ascent, paint)
 				x += width_delim
 
 			case .coll:
@@ -503,8 +528,12 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 				}
 
 				// Draw collection LHS
-				paint_set_colour(paint, bracket_colour)
-				canvas_draw_text_blob(cnv, blob_open, x, text_y, paint)
+				tdi.x = x
+				tdi.y = text_y
+				tdi.blob = blob_open
+				tdi.colour = bracket_colour
+				append(&text_draw_items, tdi)
+
 				x += width_open
 
 				if .insert_first_child in node.flags && len(node.coll.children)>0 {
@@ -536,6 +565,167 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 			auto_cast y + auto_cast line_height + padding.bottom)
 	}
 
+	pos_at_cursor_on_node :: proc(using editor: ^CodeEditor, node: ^CodeNode, cursor: CursorPosition, origin: [2]f32) -> (f32, f32) {
+		x, y: f32
+		if node == nil {
+			x = origin.x
+			y = origin.y
+		} else {
+			x = node.pos.x
+			y = node.pos.y
+
+			switch node.tag {
+			case .newline: break
+			case .token:
+				token := &node.token
+
+				if cursor.idx >= 0{
+					widthf := measure_text_width(font, token.text[:cursor.idx])
+					x += widthf
+				} else if cursor.place == .before {
+					x -= space_width
+				} else if cursor.place == .after {
+					widthf := measure_text_width(font, token.text)
+					x += widthf + space_width
+				}
+			case .string:
+				text := &node.string.text
+				width_delim := measure_text_width(font, "\"")
+
+				if cursor.place == .before {
+					x -= space_width
+				} else if cursor.idx==0 {
+					break
+				} else {
+					if cursor.idx != 0 {
+						char_count := 0
+						x0 := x
+						for line, i in node.string.lines {
+							x = x0
+							text := line.text
+							text_idx := cursor.idx-1-char_count
+							if i != 0 {y += line_height}
+
+							if 0 <= text_idx && text_idx <= len(text) { // cursor within line
+								widthf := measure_text_width(font, text[:text_idx])
+								x += width_delim + widthf
+								break
+							} else if i==len(node.string.lines)-1 { // last line
+								if text_idx==len(text)+1 { // post- close delimiter
+									widthf := measure_text_width(font, text[:])
+									x += widthf + 2*width_delim
+									break
+								} else if cursor.place == .after {
+									widthf := measure_text_width(font, text[:])
+									x += widthf + 2*width_delim + space_width
+									break
+								}
+							}
+							char_count += len(text)+1
+						}
+					}
+				}
+			case .coll:
+				width_open : f32
+				width_close : f32
+				switch node.coll.coll_type {
+				case .round:
+					width_open = measure_text_width(font, "(")
+					width_close = measure_text_width(font, ")")
+				case .square:
+					width_open = measure_text_width(font, "[")
+					width_close = measure_text_width(font, "]")
+				case.curly:
+					width_open = measure_text_width(font, "{")
+					width_close = measure_text_width(font, "}")
+				}
+				
+				if cursor.place==.before {
+					x -= space_width
+				} else if cursor.coll_place == .open_post {
+					x += width_open
+				} else if cursor.coll_place == .close_pre {
+					pos := node.coll.close_pos
+					x = pos.x
+					y = pos.y
+				} else if cursor.coll_place == .close_post {
+					pos := node.coll.close_pos
+					x = pos.x + width_close
+					y = pos.y
+				} else if cursor.place == .after {
+					pos := node.coll.close_pos
+					x = pos.x + width_close + space_width
+					y = pos.y
+				}
+			}
+		}
+		return x, y
+	}
+
+	// Draw selection background
+	{
+		for region in &regions {
+			lc, rc := ordered_cursors(code_editor, &region)
+			is_block := !region_is_point(region) && region_is_block_selection(code_editor, &region)
+			block_level := region_block_level(region)
+			siblings := get_siblings_of_codenode(code_editor, region.to.path[:block_level+1])
+
+			paint_set_colour(paint, selection_colour)
+
+			if block_level<len(lc.path) && block_level<len(rc.path) {
+				start := lc.path[block_level]
+				end := rc.path[block_level]+1
+				n := end-start
+
+				prev_x: f32
+
+				// First node
+				{
+					node := siblings[start]
+					rcpos := n>1 ? CursorPosition{idx=last_idx_of_node(&node)} : rc.position
+					lcpos := is_block ? CursorPosition{idx=0} : lc.position
+					l, y := pos_at_cursor_on_node(code_editor, &node, lcpos, origin)
+					r, y2 := pos_at_cursor_on_node(code_editor, &node, rcpos, origin)
+					canvas_draw_rect(cnv, sk_rect(l=l, r=r, t=y, b=y2+line_height), paint)
+					prev_x = r
+				}
+
+				if n>1 {
+					selected_nodes := siblings[start+1:end-1]
+					for node in &selected_nodes {
+
+						r, y2 := pos_at_cursor_on_node(code_editor, &node, CursorPosition{idx=last_idx_of_node(&node)}, origin)
+						y := node.pos.y
+						l := node.pos.x
+						if node.tag!=.newline {
+							l = prev_x
+						}
+						canvas_draw_rect(cnv, sk_rect(l=l, r=r, t=y, b=y2+line_height), paint)
+						prev_x = r
+					}
+
+					// Last node
+					node := siblings[end-1]
+
+					l, y := pos_at_cursor_on_node(code_editor, &node, CursorPosition{idx=0}, origin)
+					if node.tag!=.newline {
+						l = prev_x
+					}
+					rcpos := is_block ? CursorPosition{idx=last_idx_of_node(&node)} : rc.position
+					r, y2 := pos_at_cursor_on_node(code_editor, &node, rcpos, origin)
+					canvas_draw_rect(cnv, sk_rect(l=l, r=r, t=y, b=y2+line_height), paint)
+				}
+			}
+		}
+	}
+
+	{ // Draw nodes
+		for item in text_draw_items {
+			using item
+			paint_set_colour(paint, colour)
+			canvas_draw_text_blob(cnv, blob, x, y, paint)
+		}
+	}
 
 	{ // Draw cursor
 		cursor_width := 2*scale
@@ -546,136 +736,43 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 
 		for region in &regions {
 			// xpos : f32
-			for cursor, cursor_i in region.cursors {
-				is_to_cursor := cursor_i == 0
-				path := cursor.path
-				node := get_node_at_path(code_editor, path)
-				x, y: f32
-				if node == nil {
-					x = origin.x
-					y = origin.y
-				} else {
-					x = node.pos.x
-					y = node.pos.y
-	
-					switch node.tag {
-					case .newline: break
-					case .token:
-						token := &node.token
-	
-						if cursor.idx >= 0{
-							widthf := measure_text_width(font, token.text[:cursor.idx])
-							x += widthf
-						} else if cursor.place == .before {
-							x -= space_width
-						} else if cursor.place == .after {
-							widthf := measure_text_width(font, token.text)
-							x += widthf + space_width
-						}
-					case .string:
-						text := &node.string.text
-						width_delim := measure_text_width(font, "\"")
-	
-						if cursor.place == .before {
-							x -= space_width
-						} else if cursor.idx==0 {
-							break
-						} else {
-							if cursor.idx != 0 {
-								char_count := 0
-								x0 := x
-								for line, i in node.string.lines {
-									x = x0
-									text := line.text
-									text_idx := cursor.idx-1-char_count
-									if i != 0 {y += line_height}
-	
-									if 0 <= text_idx && text_idx <= len(text) { // cursor within line
-										widthf := measure_text_width(font, text[:text_idx])
-										x += width_delim + widthf
-										break
-									} else if i==len(node.string.lines)-1 { // last line
-										if text_idx==len(text)+1 { // post- close delimiter
-											widthf := measure_text_width(font, text[:])
-											x += widthf + 2*width_delim
-											break
-										} else if cursor.place == .after {
-											widthf := measure_text_width(font, text[:])
-											x += widthf + 2*width_delim + space_width
-											break
-										}
-									}
-									char_count += len(text)+1
-								}
-							}
-						}
-					case .coll:
-						width_open : f32
-						width_close : f32
-						switch node.coll.coll_type {
-						case .round:
-							width_open = measure_text_width(font, "(")
-							width_close = measure_text_width(font, ")")
-						case .square:
-							width_open = measure_text_width(font, "[")
-							width_close = measure_text_width(font, "]")
-						case.curly:
-							width_open = measure_text_width(font, "{")
-							width_close = measure_text_width(font, "}")
-						}
-						
-						if cursor.place==.before {
-							x -= space_width
-						} else if cursor.coll_place == .open_post {
-							x += width_open
-						} else if cursor.coll_place == .close_pre {
-							pos := node.coll.close_pos
-							x = pos.x
-							y = pos.y
-						} else if cursor.coll_place == .close_post {
-							pos := node.coll.close_pos
-							x = pos.x + width_close
-							y = pos.y
-						} else if cursor.place == .after {
-							pos := node.coll.close_pos
-							x = pos.x + width_close + space_width
-							y = pos.y
-						}
-					}
+			cursor := region.to
+			path := cursor.path
+			node := get_node_at_path(code_editor, path)
+			x, y := pos_at_cursor_on_node(code_editor, node, cursor, origin)
+			
+			x = math.round(x)
+			canvas_draw_rect(cnv, sk_rect(l=x-dl, r=x+dr, t=y, b=y+line_height), paint)
+
+			if regions_changed {
+				regions_changed = false
+				new_offset := scroll_offset
+				yi := cast(i32) y
+				v_margin := cast(i32) (line_height*0.2)
+				if yi-v_margin < view_rect.top {
+					new_offset.y = contents_rect.top - yi+v_margin
+				} else if yi + cast(i32) line_height + v_margin > view_rect.bottom {
+					new_offset.y = contents_rect.top - yi - cast(i32) line_height - v_margin + view_rect.bottom-view_rect.top
 				}
-				x = math.round(x)
-				canvas_draw_rect(cnv, sk_rect(l=x-dl, r=x+dr, t=y, b=y+line_height), paint)
+				xi := cast(i32) x
+				dli := cast(i32) dl
+				dri := cast(i32) dr
+				h_margin := cast(i32) space_width
+				if xi-dli-h_margin<view_rect.left {
+					new_offset.x = contents_rect.left - xi+dli+h_margin
+				} else if xi+dri+h_margin > view_rect.right {
+					new_offset.x = contents_rect.left - xi-dri-h_margin + view_rect.right-view_rect.left
+				}
+				if new_offset != scroll_offset {
+					request_new_scroll(code_editor, new_offset)
+					request_frame(window)
 
-				if regions_changed && is_to_cursor {
-					regions_changed = false
-					new_offset := scroll_offset
-					yi := cast(i32) y
-					v_margin := cast(i32) (line_height*0.2)
-					if yi-v_margin < view_rect.top {
-						new_offset.y = contents_rect.top - yi+v_margin
-					} else if yi + cast(i32) line_height + v_margin > view_rect.bottom {
-						new_offset.y = contents_rect.top - yi - cast(i32) line_height - v_margin + view_rect.bottom-view_rect.top
-					}
-					xi := cast(i32) x
-					dli := cast(i32) dl
-					dri := cast(i32) dr
-					h_margin := cast(i32) space_width
-					if xi-dli-h_margin<view_rect.left {
-						new_offset.x = contents_rect.left - xi+dli+h_margin
-					} else if xi+dri+h_margin > view_rect.right {
-						new_offset.x = contents_rect.left - xi-dri-h_margin + view_rect.right-view_rect.left
-					}
-					if new_offset != scroll_offset {
-						request_new_scroll(code_editor, new_offset)
-						request_frame(window)
-
-						// because of margins, we may end up requesting scrolls
-						// every frame if the cursor is on the first or last lines
-						// because it can't scroll any more
-						// HOWEVER: this is not the case because scrolls will only happen
-						// when regions_changed=true, i.e. only once when the
-						// user provided input that may have moved the cursor
-					}
+					// because of margins, we may end up requesting scrolls
+					// every frame if the cursor is on the first or last lines
+					// because it can't scroll any more
+					// HOWEVER: this is not the case because scrolls will only happen
+					// when regions_changed=true, i.e. only once when the
+					// user provided input that may have moved the cursor
 				}
 			}
 		}
@@ -1665,16 +1762,19 @@ region_simple_move :: proc(using editor: ^CodeEditor, reset_selection: bool, dir
 		rc := rc_^
 		is_point := region_is_point(region)
 		collapsing_selection := reset_selection && !is_point
+		
 		is_block := !reset_selection && region_is_block_selection(editor, &region)
 		block_level := region_block_level(region)
 		single_block_selection := is_block && region.to.path[block_level]==region.from.path[block_level]
+		is_on_from_level := len(region.from.path)-1==block_level
+
 		switch direction {
 		case .right:
 			if collapsing_selection {
 				region.to = rc
 				region.from = lc
 			} else {
-				if is_block && !single_block_selection {
+				if is_block && (!single_block_selection || is_on_from_level) {
 					node := get_node_at_path(editor, region.to.path)
 					if node != nil {
 						edge_idx := last_idx_of_node(node)
@@ -1693,7 +1793,7 @@ region_simple_move :: proc(using editor: ^CodeEditor, reset_selection: bool, dir
 				region.to = lc
 				region.from = rc
 			} else {
-				if is_block && !single_block_selection {
+				if is_block && (!single_block_selection || is_on_from_level) {
 					if region.to.idx != 0 {
 						region.to.idx = 0
 						if is_point {
@@ -1730,7 +1830,8 @@ region_simple_move :: proc(using editor: ^CodeEditor, reset_selection: bool, dir
 			node := get_node_at_path(editor, region.to.path)
 			if node != nil && is_block {
 				single_block_selection := region.to.path[block_level]==region.from.path[block_level]
-				if reversed && !(single_block_selection && region.from.idx == 0) {
+				is_on_from_block := single_block_selection && len(region.from.path)-1==block_level
+				if reversed && !(is_on_from_block && region.from.idx == 0) {
 					region.to.idx = 0
 				} else {
 					region.to.idx = last_idx_of_node(node)
