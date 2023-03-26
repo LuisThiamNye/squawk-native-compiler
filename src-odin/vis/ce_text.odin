@@ -6,6 +6,8 @@ import "core:mem"
 import "core:math"
 import "core:strings"
 import "core:io"
+import "core:os"
+import "core:slice"
 
 import rp "../rope"
 
@@ -254,4 +256,35 @@ codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
 		result = stack[0].nodes[:]
 		return
 	}
+}
+
+codeeditor_refresh_from_file :: proc(editor: ^CodeEditor) {
+	text, ok := os.read_entire_file_from_filename(editor.file_path)
+	if !ok {return}
+	nodes, n_ok := codenodes_from_string(string(text))
+	if !n_ok {
+		fmt.println("error parsing nodes from file")
+	}
+
+	editor.roots = slice.to_dynamic(nodes)
+
+	using editor
+	// Reset cursors
+	for region in regions {
+		delete_cursor(region.from)
+		delete_cursor(region.to)
+	}
+	clear(&regions)
+
+	region : Region
+	region.to.idx = 0
+
+	if len(roots)>0 {
+		region.to.path = make(type_of(region.to.path), 1)
+		region.to.path[0] = 0
+	}
+
+	deep_copy(&region.from, &region.to)
+	region.xpos = -1
+	append(&regions, region)
 }
