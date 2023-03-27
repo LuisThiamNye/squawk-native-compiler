@@ -65,7 +65,6 @@ codezip_to_next :: proc(using zip: ^CodeNode_Zipper) {
 codezip_to_next_in :: proc(using zip: ^CodeNode_Zipper) {
 	level := len(stack)-1
 	for {
-		sf := &stack[level]
 		switch node.tag {
 		case .token, .string, .newline:
 			codezip_to_next(zip)
@@ -109,7 +108,6 @@ codezip_to_prev :: proc(using zip: ^CodeNode_Zipper) {
 codezip_to_prev_in :: proc(using zip: ^CodeNode_Zipper) {
 	level := len(stack)-1
 	for {
-		sf := &stack[level]
 		switch node.tag {
 		case .token, .string, .newline:
 			codezip_to_prev(zip)

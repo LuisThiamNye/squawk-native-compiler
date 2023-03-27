@@ -1,9 +1,10 @@
 package vis
 
 /*
-TODO
-- Strings
-- newlines
+Assumptions:
+- Nesting is small
+- Tokens are short
+- Strings are not absurdly long
 */
 
 import "core:fmt"
@@ -41,7 +42,6 @@ Region :: struct {
 	},
 	xpos: f32,
 	invalidate_xpos: bool,
-	// is_block: bool,
 }
 
 region_is_point :: proc(using region: Region) -> bool {
@@ -94,17 +94,28 @@ delete_codenode_shallow :: proc(node: CodeNode) {
 
 CodeCollType :: enum {round, curly, square}
 
-CodeNode_Coll :: struct {
+CodeNodeBasic_Coll :: struct {
 	coll_type: CodeCollType,
+}
+
+CodeNode_Coll :: struct {
+	using _basic: CodeNodeBasic_Coll,
 	prefix: bool,
 	children: [dynamic]CodeNode,
 	close_pos: [2]f32,
-	// TODO support a prefix token
+}
+
+CodeNodeBasic_Token :: struct {
+	text: []u8,
+	prefix: bool,
 }
 
 CodeNode_Token :: struct {
-	text: []u8,
-	prefix: bool,
+	using _basic: CodeNodeBasic_Token,
+}
+
+CodeNodeBasic_String :: struct {
+	text: string,
 }
 
 CodeNode_String :: struct {
@@ -138,6 +149,53 @@ CodeEditor :: struct {
 
 	space_width: f32,
 	line_height: f32,
+
+	transactions: [dynamic]CodeEditor_Tx,
+	pending_edit_tx_deltas: [dynamic]EditTxDelta,
+}
+
+CodeEditor_Tx :: struct {
+	regions_tx: RegionsTx,
+	edit_tx: EditTx,
+}
+
+RegionsTx :: struct {
+	snapshots: []RegionTxSnapshot,
+}
+
+RegionTxSnapshot :: struct {
+	to: CursorTxSnapshot,
+	from: CursorTxSnapshot,
+	xpos: f32,
+}
+CursorTxSnapshot :: struct {
+	position: CursorPosition,
+	flat_idx: i32,
+}
+
+EditTx :: struct {
+	deltas: []EditTxDelta,
+}
+
+CodeNodeBasic :: struct {
+	tag: CodeNode_Tag,
+	using alt: struct #raw_union {
+		coll: CodeNodeBasic_Coll,
+		token: CodeNodeBasic_Token,
+		string: CodeNodeBasic_String,
+	},
+}
+
+EditTxDelta :: struct {
+	tag: enum {insert_nodes},
+	reversed: bool,
+	using alt: struct #raw_union {
+		insert_nodes: struct {
+			index: i32, // insertion index
+			flat_node_idx: i32, // location of the parent node. 0 = root
+			flat_node_array: CodeNodeBasic_Flat_Encoded_Array,
+		},
+	},
 }
 
 codenode_has_prefix :: proc(node: ^CodeNode) -> bool {
@@ -1174,7 +1232,7 @@ deep_copy_cursor :: proc(dest: ^Cursor, src: ^Cursor) {
 	copy(dest.path, src.path)
 }
 
-region_simple_move :: proc(using editor: ^CodeEditor, reset_selection: bool, direction: enum {right, left, down, up, home}) {
+commit_region_simple_move :: proc(using editor: ^CodeEditor, reset_selection: bool, direction: enum {right, left, down, up, home}) {
 	for region in &regions {
 		region.invalidate_xpos = true
 		lc_, rc_ := ordered_cursors(editor, &region)
@@ -1263,6 +1321,8 @@ region_simple_move :: proc(using editor: ^CodeEditor, reset_selection: bool, dir
 		}
 	}
 	scroll_to_ensure_cursor(editor)
+
+	commit_transaction(editor)
 }
 
 region_is_block_selection :: proc(editor: ^CodeEditor, region: ^Region) -> bool {
@@ -1316,9 +1376,6 @@ region_block_level :: proc(region: Region) -> int {
 			level = i
 		}
 	}
-	// if level==-1 {
-	// 	return 0 // workaround for when cursor is at root
-	// }
 	return level
 }
 
@@ -1330,15 +1387,15 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 	if mods=={} {
 		#partial switch key {
 		case .right_arrow:
-			region_simple_move(editor, true, .right)
+			commit_region_simple_move(editor, true, .right)
 		case .left_arrow:
-			region_simple_move(editor, true, .left)
+			commit_region_simple_move(editor, true, .left)
 		case .up_arrow:
-			region_simple_move(editor, true, .up)
+			commit_region_simple_move(editor, true, .up)
 		case .down_arrow:
-			region_simple_move(editor, true, .down)
+			commit_region_simple_move(editor, true, .down)
 		case .home:
-			region_simple_move(editor, true, .home)
+			commit_region_simple_move(editor, true, .home)
 		case .backspace:
 			for region in &regions {
 				if region_is_point(region) {
@@ -1351,6 +1408,7 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 				region.xpos = -1
 			}
 			scroll_to_ensure_cursor(editor)
+			commit_transaction(editor)
 		case .enter:
 			for region in &regions {
 				if region_is_point(region) {
@@ -1363,27 +1421,28 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 				region.xpos = -1
 			}
 			scroll_to_ensure_cursor(editor)
+			commit_transaction(editor)
 		case:
 			handled = false
 		}
 	} else if mods=={.shift} {
 		#partial switch key {
 		case .right_arrow:
-			region_simple_move(editor, false, .right)
+			commit_region_simple_move(editor, false, .right)
 		case .left_arrow:
-			region_simple_move(editor, false, .left)
+			commit_region_simple_move(editor, false, .left)
 		case .up_arrow:
-			region_simple_move(editor, false, .up)
+			commit_region_simple_move(editor, false, .up)
 		case .down_arrow:
-			region_simple_move(editor, false, .down)
+			commit_region_simple_move(editor, false, .down)
 		case .home:
-			region_simple_move(editor, false, .home)
+			commit_region_simple_move(editor, false, .home)
 		case:
 			handled = false
 		}
 	} else if mods=={.control} {
 		#partial switch key {
-		case .s:
+		case .s: // save
 			sb := strings.builder_make()
 			w := strings.to_writer(&sb)
 			codenode_serialise_write_nodes(w, editor.roots)
@@ -1403,6 +1462,61 @@ codeeditor_event_keydown :: proc(window: ^Window, using editor: ^CodeEditor, usi
 				deep_copy(&region.from, &region.to)
 			}
 			scroll_to_ensure_cursor(editor)
+			commit_transaction(editor)
+		case .z: // undo
+			try_undo: {
+				tx : CodeEditor_Tx
+				prev_tx : CodeEditor_Tx
+				for i := len(editor.transactions)-1;; i-=1 {
+					if i == 0 { // keep an initial transaction
+						fmt.println("end of history")
+						break try_undo
+					}
+					tx = editor.transactions[i]
+					pop(&editor.transactions)
+					if len(tx.edit_tx.deltas) != 0 {
+						prev_tx = editor.transactions[i-1]
+						break
+					}
+				}
+				for i := len(tx.edit_tx.deltas)-1; i>=0; i-=1 {
+					del := tx.edit_tx.deltas[i]
+					switch del.tag {
+					case .insert_nodes:
+						sibling_start_idx := del.insert_nodes.index
+						flat_idx := del.insert_nodes.flat_node_idx
+						parent_path := flat_idx_to_path(editor, flat_idx)
+						siblings := get_children_at_path(editor, parent_path)
+						if del.reversed { // insert nodes
+							nodes := create_codenodes_from_flat_form(del.insert_nodes.flat_node_array)
+							fmt.println("insert", len(nodes), "at", sibling_start_idx)
+							inject_at(siblings, auto_cast sibling_start_idx, ..nodes)
+						} else { // remove nodes
+							n := del.insert_nodes.flat_node_array.tree_shape[0]
+							fmt.println("remove", n, "at", sibling_start_idx)
+							for i in 0..<n {
+								remove_node_from_siblings(editor, siblings, auto_cast sibling_start_idx)
+							}
+						}
+					}
+				}
+				// regions
+				for region in regions {
+					for cursor in region.cursors {
+						delete_cursor(cursor)
+					}
+				}
+				clear(&regions)
+				snapshots := prev_tx.regions_tx.snapshots
+				resize(&regions, len(snapshots))
+				for snap, i in snapshots {
+					regions[i].xpos = snap.xpos
+					regions[i].from.position = snap.from.position
+					regions[i].from.path = flat_idx_to_path(editor, snap.from.flat_idx)
+					regions[i].to.position = snap.to.position
+					regions[i].to.path = flat_idx_to_path(editor, snap.to.flat_idx)
+				}
+			}
 		case:
 			handled = false
 		}
@@ -1425,16 +1539,25 @@ codenode_string_insert_text :: proc(node: ^CodeNode, cursor: ^Cursor, text: stri
 
 max_token_length :: 1024
 
-codeeditor_insert_nodes_from_text :: proc
-(editor: ^CodeEditor, input: string, nodes0: ^[dynamic]CodeNode, insert_idx: int) -> int {
-	nodes, ok := codenodes_from_string(input)
-
+codeeditor_insert_nodes_from_text :: proc(
+	editor: ^CodeEditor, input: string, parent_path: []int, nodes0: ^[dynamic]CodeNode, insert_idx: int,
+	) -> int {
+	flat_nodes, ok := codenodes_from_string(input)
 	if !ok {
 		fmt.println("parse error")
 		return 0
 	}
+	nodes := create_codenodes_from_flat_form(flat_nodes)
+	defer delete(nodes)
 
 	inject_at_elems(nodes0, insert_idx, ..nodes)
+
+	del : EditTxDelta
+	del.tag = .insert_nodes
+	del.insert_nodes.index = auto_cast insert_idx
+	del.insert_nodes.flat_node_idx = auto_cast cursor_path_to_flat_idx(editor, parent_path)
+	del.insert_nodes.flat_node_array = flat_nodes
+	append(&editor.pending_edit_tx_deltas, del)
 
 	return len(nodes)
 }
@@ -1472,7 +1595,7 @@ codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input
 		}
 
 		n_nodes_added := codeeditor_insert_nodes_from_text(
-			editor, input_str, children, 0)
+			editor, input_str, path, children, 0)
 		if n_nodes_added > 0 {
 			target_node_idx := n_nodes_added-1
 
@@ -1494,7 +1617,7 @@ codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input
 				offset = 0
 			}
 			n_nodes_added := codeeditor_insert_nodes_from_text(
-				editor, input_str, siblings, node_sibling_idx+offset)
+				editor, input_str, path[:len(path)-1], siblings, node_sibling_idx+offset)
 			target_node_idx := node_sibling_idx + n_nodes_added + offset - 1
 			cursor.path[len(cursor.path)-1] = target_node_idx
 			cursor.idx = last_idx_of_node(&siblings[target_node_idx])
@@ -1503,12 +1626,21 @@ codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input
 		if ((node.tag==.string || node.tag==.coll) &&
 			(cursor.idx==0 || cursor.idx==last_idx_of_node(node))) {
 			if cursor.idx==0 { // assumed that if cursor is here then coll does not have a prefix
-				extra_nodes, ok := codenodes_from_string(input_str)
+				flat_nodes, ok := codenodes_from_string(input_str)
 				if !ok {return}
+				extra_nodes := create_codenodes_from_flat_form(flat_nodes)
+				defer delete(extra_nodes)
 
 				new_node_idx := cursor.path[len(cursor.path)-1]
 				node = nil
 				inject_at(siblings, new_node_idx, ..extra_nodes)
+
+				del : EditTxDelta
+				del.tag = .insert_nodes
+				del.insert_nodes.index = auto_cast new_node_idx
+				del.insert_nodes.flat_node_idx = auto_cast cursor_path_to_flat_idx(editor, path[:len(path)-1])
+				del.insert_nodes.flat_node_array = flat_nodes
+				append(&editor.pending_edit_tx_deltas, del)
 
 				if len(extra_nodes)==1 && siblings[new_node_idx].tag==.token { // token prefix
 					codenode_set_prefix(&siblings[new_node_idx+1], true)
@@ -1534,8 +1666,27 @@ codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input
 			if cursor.idx < 0 {return}
 
 			if is_valid_token_string(input_str) { // normal text insertion in token
+				parent_path := path[:len(path)-1]
+
+				// delta: remove node
+				del : EditTxDelta
+				del.tag = .insert_nodes
+				del.reversed = true
+				del.insert_nodes.index = auto_cast node_sibling_idx
+				del.insert_nodes.flat_node_idx = auto_cast cursor_path_to_flat_idx(editor, parent_path)
+				del.insert_nodes.flat_node_array = codenodes_to_flat_array(siblings[node_sibling_idx:node_sibling_idx+1])
+				append(&editor.pending_edit_tx_deltas, del)
+
 				rp.slice_inject_at((cast(^[]u8) &token.text), cursor.idx, transmute([]u8) input_str)
 				cursor.idx += len(input_str)
+
+				// delta: replace node
+				del.tag = .insert_nodes
+				del.reversed = false
+				del.insert_nodes.index = auto_cast node_sibling_idx
+				del.insert_nodes.flat_node_idx = auto_cast cursor_path_to_flat_idx(editor, parent_path)
+				del.insert_nodes.flat_node_array = codenodes_to_flat_array(siblings[node_sibling_idx:node_sibling_idx+1])
+				append(&editor.pending_edit_tx_deltas, del)
 
 			} else { // reparse entire token
 				text_idx := cursor.idx
@@ -1546,12 +1697,23 @@ codeeditor_insert_text :: proc(using editor: ^CodeEditor, cursor: ^Cursor, input
 					ss[2] = token_str[text_idx:]
 				}
 				expanded_str := strings.concatenate(ss, context.temp_allocator)
+				parent_path := path[:len(path)-1]
 				n_nodes_added := codeeditor_insert_nodes_from_text(
-					editor, expanded_str, siblings, node_sibling_idx+1)
+					editor, expanded_str, parent_path, siblings, node_sibling_idx+1)
 				if n_nodes_added==0 {
 					// parse failure
 				} else {
+
+					del : EditTxDelta
+					del.tag = .insert_nodes
+					del.reversed = true
+					del.insert_nodes.index = auto_cast node_sibling_idx
+					del.insert_nodes.flat_node_idx = auto_cast cursor_path_to_flat_idx(editor, parent_path)
+					del.insert_nodes.flat_node_array = codenodes_to_flat_array(siblings[node_sibling_idx:node_sibling_idx+1])
+					append(&editor.pending_edit_tx_deltas, del)
+
 					remove_node_from_siblings(editor, siblings, node_sibling_idx)
+
 					target_node_idx := node_sibling_idx + n_nodes_added - 1
 
 					cursor.path[len(cursor.path)-1] = target_node_idx
@@ -1608,6 +1770,7 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 			region.xpos = -1
 		}
 		scroll_to_ensure_cursor(editor)
+		commit_transaction(editor)
 		return
 	}
 
@@ -1723,6 +1886,7 @@ codeeditor_event_charinput :: proc(window: ^Window, editor: ^CodeEditor, ch: int
 		region.xpos = -1
 	}
 	scroll_to_ensure_cursor(editor)
+	commit_transaction(editor)
 }
 
 cursor_path_append :: proc(cursor: ^Cursor, idx: int) {
@@ -1750,15 +1914,65 @@ get_node_at_path :: proc(code_editor: ^CodeEditor, path: []int) ->  ^CodeNode {
 
 get_siblings_of_codenode :: proc(editor: ^CodeEditor, path: []int) -> ^[dynamic]CodeNode {
 	if len(path)==0 {panic("tried to get siblings of the root")}
+	return get_children_at_path(editor, path[:len(path)-1])
+}
+
+get_children_at_path :: proc(editor: ^CodeEditor, path: []int) -> ^[dynamic]CodeNode {
 	level := 0
-	siblings := &editor.roots
+	children := &editor.roots
 	for {
-		idx := path[level]
-		node := &siblings[idx]
-		level += 1
 		if len(path)==level {
-			return siblings
+			return children
 		}
-		siblings = &node.coll.children
+		idx := path[level]
+		node := &children[idx]
+		children = &node.coll.children
+		level += 1
 	}
+}
+
+cursor_path_to_flat_idx  :: proc(editor: ^CodeEditor, path: []int) -> int {
+	if len(path)==0 {return 0}
+	target_node := get_node_at_path(editor, path)
+	zip := get_codezip_at_path(editor, {0})
+	defer delete_codezip(zip)
+	flat_idx := 1
+	for {
+		if zip.node == target_node {break}
+		codezip_to_next_in(&zip)
+		flat_idx += 1
+	}
+	return flat_idx
+}
+
+flat_idx_to_path :: proc(editor: ^CodeEditor, #any_int index: int) -> []int {
+	if index==0 {return {}}
+	zip := get_codezip_at_path(editor, {0})
+	defer delete_codezip(zip)
+	flat_idx := 1
+	for {
+		if flat_idx == index {break}
+		codezip_to_next_in(&zip)
+		flat_idx += 1
+	}
+	return codezip_path(zip)
+}
+
+commit_transaction :: proc(editor: ^CodeEditor) {
+	// edits
+	append_nothing(&editor.transactions)
+	tx := &editor.transactions[len(editor.transactions)-1]
+	tx.edit_tx.deltas = clone_slice(editor.pending_edit_tx_deltas[:])
+	clear(&editor.pending_edit_tx_deltas)
+
+	// regions
+	rs := make([]RegionTxSnapshot, len(editor.regions))
+	for region, i in editor.regions {
+		rs[i].xpos = region.xpos
+		rs[i].from.position = region.from.position
+		rs[i].from.flat_idx = auto_cast cursor_path_to_flat_idx(editor, region.from.path)
+		rs[i].to.position = region.to.position
+		rs[i].to.flat_idx = auto_cast cursor_path_to_flat_idx(editor, region.to.path)
+	}
+	tx.regions_tx.snapshots = rs
 }

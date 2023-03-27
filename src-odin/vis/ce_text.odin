@@ -11,6 +11,23 @@ import "core:slice"
 
 import rp "../rope"
 
+CodeNodeBasic_Flat_Encoded_Coll ::    struct{node: CodeNodeBasic_Coll,   idx: i32}
+CodeNodeBasic_Flat_Encoded_Token ::   struct{node: CodeNodeBasic_Token,  idx: i32}
+CodeNodeBasic_Flat_Encoded_String ::  struct{node: CodeNodeBasic_String, idx: i32}
+CodeNodeBasic_Flat_Encoded_Newline :: struct{idx: i32}
+
+CodeNodeBasic_Flat_Encoded_Array :: struct {
+	// One number per node, flattened
+	// -1 for simple node, otherwise the number of children.
+	dynamic_pool: mem.Dynamic_Pool,
+	max_depth: i32, // number of layers of siblings
+	tree_shape: []i32,
+	colls:    []CodeNodeBasic_Flat_Encoded_Coll,
+	tokens:   []CodeNodeBasic_Flat_Encoded_Token,
+	strings:  []CodeNodeBasic_Flat_Encoded_String,
+	newlines: []CodeNodeBasic_Flat_Encoded_Newline,
+}
+
 write_escaped_string_node_rope :: proc(w: io.Writer, rope: ^rp.RopeNode) {
 	it := rp.byte_iterator(rope)
 	for {
@@ -94,7 +111,7 @@ codenode_serialise_write :: proc(w: io.Writer, node: ^CodeNode, indent_level := 
 	}
 }
 
-read_string_node_from_escaped_string :: proc(input: string) -> (CodeNode, int, bool) {
+read_string_node_from_escaped_string :: proc(input: string) -> (CodeNodeBasic_String, int, bool) {
 	sb := strings.builder_make()
 	end_idx := -1
 	for i:=0; i<len(input); i+=1{
@@ -112,18 +129,33 @@ read_string_node_from_escaped_string :: proc(input: string) -> (CodeNode, int, b
 		return {}, -1, false
 	}
 
-	node : CodeNode
-	node.tag = .string
-	node.string.text = rp.of_string(strings.to_string(sb))
+	node : CodeNodeBasic_String
+	node.text = strings.to_string(sb)
 	return node, end_idx, true
 }
 
-codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
+codenodes_from_string :: proc(input: string) -> (result: CodeNodeBasic_Flat_Encoded_Array, ok: bool) {
 	StackFrame :: struct {
 		delimiter: u8,
-		prefix: bool,
-		nodes : [dynamic]CodeNode,
+		nchildren: i32,
+		left_token_idx: int,
+		parent_node_tree_idx: int,
 	}
+
+	dyn_pool : mem.Dynamic_Pool
+	mem.dynamic_pool_init(&dyn_pool)
+
+	// Use a custom allocator to make it easy to free everything if things go wrong
+	context.allocator = mem.dynamic_pool_allocator(&dyn_pool)
+
+	max_depth := 1
+	tree_shape: [dynamic]i32
+	colls:    [dynamic]CodeNodeBasic_Flat_Encoded_Coll
+	tokens:   [dynamic]CodeNodeBasic_Flat_Encoded_Token
+	strings:  [dynamic]CodeNodeBasic_Flat_Encoded_String
+	newlines: [dynamic]CodeNodeBasic_Flat_Encoded_Newline
+
+	append(&tree_shape, -2) // to be replaced
 
 	stack : [dynamic]StackFrame
 	defer delete(stack)
@@ -145,9 +177,9 @@ codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
 		if ch==' '||ch=='\r'||ch=='\t'||ch==13||ch==14 { // eat whitespace
 			i += 1
 		} else if ch=='\n' {
-			node : CodeNode
-			node.tag = .newline
-			append(&nodes, node)
+			append(&newlines, CodeNodeBasic_Flat_Encoded_Newline{idx=auto_cast len(tree_shape)})
+			append(&tree_shape, -1)
+			nchildren += 1
 			i += 1
 		} else if ch=='"' {
 			text_start := i+1
@@ -162,25 +194,46 @@ codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
 				break
 			}
 			if i == last_token_end_i { // has prefix
-				left_node := &nodes[len(nodes)-1]
-				left_node.token.prefix = true
-				node.string.prefix = true
+				left_node := &tokens[left_token_idx].node
+				left_node.prefix = true
 			}
-			append(&nodes, node)
+			append(&strings, CodeNodeBasic_Flat_Encoded_String{idx=auto_cast len(tree_shape), node=node})
+			append(&tree_shape, -1)
+			nchildren += 1
 			i = text_start + str_count + 1
 		} else {
 			try_coll: {
 				closer : u8
+				coll_type : CodeCollType
 				if ch=='(' {
+					coll_type = .round
 					closer = ')'
 				} else if ch=='[' {
+					coll_type = .square
 					closer = ']'
 				} else if ch=='{' {
+					coll_type = .curly
 					closer = '}'
 				} else {
 					break try_coll
 				}
-				append(&stack, StackFrame{delimiter=closer, prefix=(i == last_token_end_i)})
+				if i == last_token_end_i { // has prefix
+					left_node := &tokens[left_token_idx].node
+					left_node.prefix = true
+				}
+				node : CodeNodeBasic_Coll
+				node.coll_type = coll_type
+				append(&colls, CodeNodeBasic_Flat_Encoded_Coll{idx=auto_cast len(tree_shape), node=node})
+				append(&tree_shape, -2) // to be replaced later
+				nchildren += 1
+
+				new_frame : StackFrame
+				new_frame.delimiter = closer
+				new_frame.parent_node_tree_idx = len(tree_shape)-1
+				append(&stack, new_frame)
+				if len(stack)>max_depth {
+					max_depth = len(stack)
+				}
 				i += 1
 				continue
 			}
@@ -202,38 +255,17 @@ codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
  					ok = false
  					break
  				}
-				node : CodeNode
-				node.tag = .token
-				node.token.text = make(type_of(node.token.text), len(segment))
-				copy(node.token.text, segment)
-				append(&nodes, node)
+				node : CodeNodeBasic_Token
+				node.text = clone_slice(transmute([]u8) segment)
+				append(&tokens, CodeNodeBasic_Flat_Encoded_Token{idx=auto_cast len(tree_shape), node=node})
+				append(&tree_shape, -1)
+				nchildren += 1
+				left_token_idx = len(tokens)-1
 				last_token_end_i = i
 
 			} else if ch==frame.delimiter {
-				coll_type : CodeCollType
-				switch ch {
-				case ')':
-					coll_type = .round
-				case ']':
-					coll_type = .square
-				case '}':
-					coll_type = .curly
-				case:
-					panic("!!!")
-				}
-				node : CodeNode
-				node.tag = .coll
-				node.coll.coll_type = coll_type
-				node.coll.children = nodes
+				tree_shape[parent_node_tree_idx] = nchildren
 				pop(&stack)
-				nodes := &stack[len(stack)-1].nodes
-				if prefix {
-					left_node := &nodes[len(nodes)-1]
-					assert(left_node.tag==.token)
-					left_node.token.prefix = true
-					node.coll.prefix = true
-				}
-				append(nodes, node)
 				i += 1
 
 			} else {
@@ -245,28 +277,116 @@ codenodes_from_string :: proc(input: string) -> (result: []CodeNode, ok: bool) {
 	}
 
 	if !ok {
-		for frame in stack {
-			for node in frame.nodes {
-				delete_codenode(node)
-			}
-			delete(frame.nodes)
-		}
+		mem.dynamic_pool_free_all(&dyn_pool)
+		mem.dynamic_pool_destroy(&dyn_pool)
 		return
 	} else {
-		result = stack[0].nodes[:]
+		tree_shape[0] = stack[0].nchildren
+		assert(tree_shape[0] >= 0)
+		result.dynamic_pool = dyn_pool
+		result.max_depth = auto_cast max_depth
+		result.tree_shape = tree_shape[:]
+		result.colls = colls[:]
+		result.tokens = tokens[:]
+		result.strings = strings[:]
+		result.newlines = newlines[:]
 		return
 	}
+}
+
+destroy_codenodebasic_flat_encoded_array :: proc(using ary: ^CodeNodeBasic_Flat_Encoded_Array) {
+	mem.dynamic_pool_free_all(&dynamic_pool)
+	mem.dynamic_pool_destroy(&dynamic_pool)
+}
+
+create_codenodes_from_flat_form :: proc(using ary: CodeNodeBasic_Flat_Encoded_Array) -> []CodeNode {
+	n_nodes := len(tree_shape)
+	if n_nodes==1 {return {}}
+	node_ptrs := make([]^CodeNode, n_nodes)
+
+	root_nodes := make([]CodeNode, tree_shape[0])
+
+	StackFrame :: struct {
+		siblings: []CodeNode,
+		sibling_idx: int,
+	}
+	stack := make([]StackFrame, max_depth)
+	defer delete(stack)
+
+	using frame := &stack[0]
+	siblings = root_nodes
+	level := 0
+	for i := 1 ;; {
+		if sibling_idx==len(siblings) {
+			level -= 1
+			frame = &stack[level]
+			continue
+		}
+		nchildren := tree_shape[i]
+
+		node := &siblings[sibling_idx]
+		node_ptrs[i] = node
+		sibling_idx += 1
+		if nchildren >= 0 {
+			nodes := make([dynamic]CodeNode, nchildren)
+			node.coll.children = nodes
+
+			level += 1
+			stack[level] = {siblings=nodes[:], sibling_idx=0}
+			frame = &stack[level]
+		}
+		i += 1
+		if i == len(tree_shape) {break}
+	}
+
+	for item in colls {
+		node := node_ptrs[item.idx]
+		node.tag = .coll
+		node.coll.coll_type = item.node.coll_type
+	}
+
+	for item in strings {
+		node := node_ptrs[item.idx]
+		node.tag = .string
+		node.string.text = rp.of_string(item.node.text)
+	}
+
+	for item in tokens {
+		node := node_ptrs[item.idx]
+		node.tag = .token
+		node.token.text = clone_slice(item.node.text)
+		node.token.prefix = item.node.prefix
+
+		if item.node.prefix {
+			right_node := node_ptrs[item.idx+1]
+			assert(right_node.tag==.string || right_node.tag==.coll)
+			codenode_set_prefix(right_node, true)
+		}
+	}
+
+	for item in newlines {
+		node := node_ptrs[item.idx]
+		node.tag = .newline
+	}
+
+	return root_nodes
 }
 
 codeeditor_refresh_from_file :: proc(editor: ^CodeEditor) {
 	text, ok := os.read_entire_file_from_filename(editor.file_path)
 	if !ok {return}
-	nodes, n_ok := codenodes_from_string(string(text))
+	flat_nodes, n_ok := codenodes_from_string(string(text))
 	if !n_ok {
 		fmt.println("error parsing nodes from file")
 	}
 
-	editor.roots = slice.to_dynamic(nodes)
+	nodes := create_codenodes_from_flat_form(flat_nodes)
+	defer delete(nodes)
+	for node in editor.roots {
+		delete_codenode(node)
+	}
+	clear(&editor.roots)
+	append(&editor.roots, ..nodes)
 
 	using editor
 	// Reset cursors
@@ -287,4 +407,86 @@ codeeditor_refresh_from_file :: proc(editor: ^CodeEditor) {
 	deep_copy(&region.from, &region.to)
 	region.xpos = -1
 	append(&regions, region)
+
+	commit_transaction(editor)
+}
+
+codenodes_to_flat_array :: proc(roots: []CodeNode) -> (result: CodeNodeBasic_Flat_Encoded_Array) {
+	StackFrame :: struct {
+		sibling_idx: int,
+		siblings: []CodeNode,
+	}
+
+	dyn_pool : mem.Dynamic_Pool
+	mem.dynamic_pool_init(&dyn_pool)
+
+	// Use a custom allocator to make it easy to free everything
+	context.allocator = mem.dynamic_pool_allocator(&dyn_pool)
+
+	max_depth := 1
+	tree_shape: [dynamic]i32
+	colls:    [dynamic]CodeNodeBasic_Flat_Encoded_Coll
+	tokens:   [dynamic]CodeNodeBasic_Flat_Encoded_Token
+	strings:  [dynamic]CodeNodeBasic_Flat_Encoded_String
+	newlines: [dynamic]CodeNodeBasic_Flat_Encoded_Newline
+
+	append(&tree_shape, auto_cast len(roots))
+
+	stack : [dynamic]StackFrame
+	defer delete(stack)
+	append(&stack, StackFrame{siblings=roots, sibling_idx=0})
+
+	for ; ; {
+		using frame := &stack[len(stack)-1]
+
+		if sibling_idx == len(siblings){
+			assert(len(stack)==1)
+			break
+		}
+
+		live_node := &siblings[sibling_idx]
+
+		switch live_node.tag {
+		case .newline:
+			append(&newlines, CodeNodeBasic_Flat_Encoded_Newline{idx=auto_cast len(tree_shape)})
+			append(&tree_shape, -1)
+			sibling_idx += 1
+		case .string:
+			node : CodeNodeBasic_String
+			node.text = rp.to_string(&live_node.string.text)
+			append(&strings, CodeNodeBasic_Flat_Encoded_String{idx=auto_cast len(tree_shape), node=node})
+			append(&tree_shape, -1)
+			sibling_idx += 1
+		case .coll:
+			node : CodeNodeBasic_Coll
+			node.coll_type = live_node.coll.coll_type
+			append(&colls, CodeNodeBasic_Flat_Encoded_Coll{idx=auto_cast len(tree_shape), node=node})
+			append(&tree_shape, auto_cast len(live_node.coll.children))
+			sibling_idx += 1
+
+			new_frame : StackFrame
+			new_frame.siblings = live_node.coll.children[:]
+			new_frame.sibling_idx = 0
+			append(&stack, new_frame)
+			if len(stack)>max_depth {
+				max_depth = len(stack)
+			}
+		case .token:
+			node : CodeNodeBasic_Token
+			node.prefix = live_node.token.prefix
+			node.text = clone_slice(live_node.token.text)
+			append(&tokens, CodeNodeBasic_Flat_Encoded_Token{idx=auto_cast len(tree_shape), node=node})
+			append(&tree_shape, -1)
+			sibling_idx += 1
+		}
+	}
+
+	result.dynamic_pool = dyn_pool
+	result.max_depth = auto_cast max_depth
+	result.tree_shape = tree_shape[:]
+	result.colls = colls[:]
+	result.tokens = tokens[:]
+	result.strings = strings[:]
+	result.newlines = newlines[:]
+	return
 }

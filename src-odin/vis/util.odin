@@ -1,5 +1,24 @@
 package vis
 
+import "core:runtime"
+import "core:intrinsics"
+import "core:strings"
+
+clone_slice :: proc(src: []$E, allocator := context.allocator) -> (dst: []E, err: runtime.Allocator_Error) #optional_allocator_error {
+	n := len(src)
+	if n==0 {return}
+	dst = make([]E, n, allocator)
+	intrinsics.mem_copy_non_overlapping(raw_data(dst), raw_data(src), n*size_of(E))
+	return
+}
+
+clone_string :: proc(src: string, allocator := context.allocator) -> (dst: string, err: runtime.Allocator_Error) #optional_allocator_error {
+	r, e := clone_slice(transmute([]u8) src)
+	dst = string(r)
+	err = e
+	return
+}
+
 
 Key :: enum {
 	// windows virtual key codes

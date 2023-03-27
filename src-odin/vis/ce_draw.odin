@@ -31,6 +31,10 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 		codeeditor_refresh_from_file(code_editor)
 	}
 
+	if len(code_editor.pending_edit_tx_deltas)>0 {
+		fmt.println("ERROR: there are", len(code_editor.pending_edit_tx_deltas), "edit deltas that have not been transacted")
+	}
+
 	active_colour : u32 = 0xff007ACC
 	unfocused_cursor_colour : u32 = 0xaFa0a0a0
 	selection_colour : u32 = 0xFFB4D8FD
@@ -256,6 +260,7 @@ draw_codeeditor :: proc(window: ^Window, cnv: sk.SkCanvas) {
 				}
 				left_is_prefix := left_node.tag==.token && left_node.token.prefix
 				if left_is_prefix && !has_prefix {
+					fmt.println(left_node, node)
 					panic("left node is prefix, but this node does not have a prefix")
 				} else if has_prefix && !left_is_prefix {
 					panic("this node has a prefix, but left node is not a prefix")

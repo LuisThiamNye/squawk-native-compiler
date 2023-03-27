@@ -7,6 +7,10 @@ import "core:strings"
 import "core:time"
 import "core:slice"
 
+// On Bézier curves
+// https://jamie-wong.com/post/bezier-curves/
+// https://pomax.github.io/bezierinfo/
+
 
 request_new_scroll :: proc(using editor: ^CodeEditor, new_scroll_offset: [2]i32) {
 	current_time := time.to_unix_nanoseconds(time.now())/1e6
