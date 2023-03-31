@@ -436,12 +436,16 @@ codenodes_to_flat_array :: proc(roots: []CodeNode) -> (result: CodeNodeBasic_Fla
 	defer delete(stack)
 	append(&stack, StackFrame{siblings=roots, sibling_idx=0})
 
-	for ; ; {
-		using frame := &stack[len(stack)-1]
-
+	using frame := &stack[0]
+	for {
 		if sibling_idx == len(siblings){
-			assert(len(stack)==1)
-			break
+			if len(stack)==1 {
+				break
+			} else {
+				pop(&stack)
+				frame = &stack[len(stack)-1]
+				continue
+			}
 		}
 
 		live_node := &siblings[sibling_idx]
@@ -471,6 +475,7 @@ codenodes_to_flat_array :: proc(roots: []CodeNode) -> (result: CodeNodeBasic_Fla
 			if len(stack)>max_depth {
 				max_depth = len(stack)
 			}
+			frame = &stack[len(stack)-1]
 		case .token:
 			node : CodeNodeBasic_Token
 			node.prefix = live_node.token.prefix

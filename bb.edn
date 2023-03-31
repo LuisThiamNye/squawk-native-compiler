@@ -4,11 +4,12 @@
   
   odin-build
   (apply shell "odin" "build" "./src-odin"
-         "-collection:skia=./skia"
-         *command-line-args*
-         )
+    "-out:main.exe"
+    "-collection:skia=./skia"
+    *command-line-args*
+    )
   odin
-  (do (run 'odin-build) (shell "./src-odin.exe"))
+  (do (run 'odin-build) (shell "./main.exe"))
   
   ;; Type size generator
   ;;;;;;;;;;;

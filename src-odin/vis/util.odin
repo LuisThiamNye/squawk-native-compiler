@@ -3,6 +3,7 @@ package vis
 import "core:runtime"
 import "core:intrinsics"
 import "core:strings"
+import "core:slice"
 
 clone_slice :: proc(src: []$E, allocator := context.allocator) -> (dst: []E, err: runtime.Allocator_Error) #optional_allocator_error {
 	n := len(src)
@@ -17,6 +18,16 @@ clone_string :: proc(src: string, allocator := context.allocator) -> (dst: strin
 	dst = string(r)
 	err = e
 	return
+}
+
+append_new :: #force_inline proc(array: ^[dynamic]$E) -> ^E {
+	append_nothing(array)
+	return &array[len(array)-1]
+}
+
+slice_equal :: proc(s1: []$A, s2: []$B) -> bool {
+	if len(s1)==0 && len(s2)==0 {return true}
+	return slice.equal(s1, s2)
 }
 
 
